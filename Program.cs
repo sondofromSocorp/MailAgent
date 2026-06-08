@@ -67,22 +67,24 @@ static async Task RunOnceAsync(
     var emails = await reader.GetToProcessAsync(ct);
     Console.WriteLine($"  {emails.Count} mail(s) a traiter.");
 
-    var toKeep = new List<MailKit.UniqueId>(emails.Count);   // restent dans la boite (marquage anti-doublon)
-    var toMove = new List<MailKit.UniqueId>(emails.Count);   // ranges dans le dossier dedie
+    var toKeep = new List<MailKit.UniqueId>(emails.Count);              // restent en boite (marquage anti-doublon)
+    var toMove = new Dictionary<string, List<MailKit.UniqueId>>();      // dossier -> mails a classer
 
     foreach (var email in emails)
     {
         var result = await classifier.ClassifyAsync(email, ct);
-        // Notifie : important ET pas encore repondu ET (nouveau mail non lu OU reponse attendue).
-        // -> les mails lus auxquels on doit encore repondre sont signales ; pas de spam sinon.
-        var notify = result.Important && !email.Answered && (!email.Seen || result.NeedsReply);
-        var tag = result.Important ? "IMPORTANT" : result.Declutter ? "RANGER   " : "garder   ";
-        Console.WriteLine($"  [{tag}] {(email.Seen ? "lu   " : "nonlu")} {(result.NeedsReply ? "reponse-attendue " : "                 ")} {email.Subject}  ({result.Category}) - {result.Reason}");
+        // Notifie uniquement si une ACTION est attendue et que l'utilisateur n'a pas encore repondu.
+        var notify = result.ActionRequired && !email.Answered;
+        // Securite : on ne classe que vers un dossier autorise ; sinon le mail reste en boite.
+        var folder = Array.IndexOf(config.Imap.Folders, result.Folder) >= 0 ? result.Folder : "";
+
+        var tag = notify ? "ACTION" : folder.Length > 0 ? folder : "garder";
+        Console.WriteLine($"  [{tag,-13}] {(email.Seen ? "lu   " : "nonlu")} {email.Subject}  - {result.Reason}");
 
         if (dryRun)
         {
             if (notify) Console.WriteLine("    -> (test) notification WhatsApp");
-            if (result.Declutter) Console.WriteLine($"    -> (test) deplacement vers '{config.Imap.SortFolder}'");
+            if (folder.Length > 0) Console.WriteLine($"    -> (test) classement dans '{folder}'");
             continue;
         }
 
@@ -92,7 +94,11 @@ static async Task RunOnceAsync(
             Console.WriteLine("    -> notification WhatsApp envoyee.");
         }
 
-        if (result.Declutter) toMove.Add(email.Uid);
+        if (folder.Length > 0)
+        {
+            if (!toMove.TryGetValue(folder, out var list)) toMove[folder] = list = [];
+            list.Add(email.Uid);
+        }
         else toKeep.Add(email.Uid);
     }
 
@@ -102,11 +108,13 @@ static async Task RunOnceAsync(
         return;
     }
 
-    // Range les inutiles, puis marque le reste pour ne pas le reanalyser.
-    await reader.MoveToFolderAsync(toMove, config.Imap.SortFolder, ct);
+    // Classe chaque mail dans son dossier, puis marque ceux gardes en boite (anti-doublon).
+    foreach (var (folder, uids) in toMove)
+    {
+        await reader.MoveToFolderAsync(uids, folder, ct);
+        Console.WriteLine($"  {uids.Count} mail(s) classe(s) dans '{folder}'.");
+    }
     await reader.MarkNotifiedAsync(toKeep, ct);
-    if (toMove.Count > 0)
-        Console.WriteLine($"  {toMove.Count} mail(s) range(s) dans '{config.Imap.SortFolder}'.");
 }
 
 static void Validate(AgentConfig c)

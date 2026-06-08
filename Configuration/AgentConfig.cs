@@ -36,8 +36,8 @@ public sealed class ImapConfig
     /// </summary>
     public string NotifiedKeyword { get; init; } = "MailAgentNotified";
 
-    /// <summary>Dossier/libelle ou sont deplaces les mails juges inutiles (menage).</summary>
-    public string SortFolder { get; init; } = "MailAgent";
+    /// <summary>Dossiers de classement autorises (le modele choisit parmi eux ; sinon le mail reste en boite).</summary>
+    public string[] Folders { get; init; } = ["Pub", "Factures", "Communication"];
 }
 
 public sealed class ClaudeConfig
