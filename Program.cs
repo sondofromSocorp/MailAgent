@@ -1,3 +1,4 @@
+using System.Globalization;
 using MailAgent.Configuration;
 using MailAgent.Services;
 using Microsoft.Extensions.Configuration;
@@ -67,6 +68,10 @@ static async Task RunOnceAsync(
     var emails = await reader.GetToProcessAsync(ct);
     Console.WriteLine($"  {emails.Count} mail(s) a traiter.");
 
+    // Heures silencieuses : pendant la plage de nuit, les notifications sont reportees.
+    var quiet = IsQuietNow(config.Agent);
+    if (quiet) Console.WriteLine("  Heures silencieuses : notifications suspendues (rangement maintenu).");
+
     var toKeep = new List<MailKit.UniqueId>(emails.Count);              // restent en boite (marquage anti-doublon)
     var toMove = new Dictionary<string, List<MailKit.UniqueId>>();      // dossier -> mails a classer
 
@@ -84,6 +89,14 @@ static async Task RunOnceAsync(
             var folder = result.ActionRequired
                 ? ""
                 : Array.IndexOf(config.Imap.Folders, result.Folder) >= 0 ? result.Folder : "";
+
+            // Heures silencieuses : une notif attendue est reportee. On laisse le mail en
+            // boite SANS le marquer, pour qu'il soit repris et notifie apres la plage silencieuse.
+            if (notify && quiet)
+            {
+                Console.WriteLine($"  [DIFFERE      ] {(email.Seen ? "lu   " : "nonlu")} {email.Subject}  - notif reportee (heures silencieuses)");
+                continue;
+            }
 
             var tag = notify ? "ACTION" : folder.Length > 0 ? folder : "garder";
             Console.WriteLine($"  [{tag,-13}] {(email.Seen ? "lu   " : "nonlu")} {email.Subject}  - {result.Reason}");
@@ -128,6 +141,26 @@ static async Task RunOnceAsync(
         Console.WriteLine($"  {uids.Count} mail(s) classe(s) dans '{folder}'.");
     }
     await reader.MarkNotifiedAsync(toKeep, ct);
+}
+
+// Indique si l'heure courante (dans le fuseau configure) tombe dans la plage silencieuse.
+// La plage peut traverser minuit (ex. 22:00 -> 06:30).
+static bool IsQuietNow(RuntimeConfig agent)
+{
+    if (!agent.QuietHoursEnabled) return false;
+
+    TimeZoneInfo tz;
+    try { tz = TimeZoneInfo.FindSystemTimeZoneById(agent.TimeZone); }
+    catch (TimeZoneNotFoundException) { tz = TimeZoneInfo.Local; }
+    catch (InvalidTimeZoneException) { tz = TimeZoneInfo.Local; }
+
+    var now = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, tz).DateTime);
+    var start = TimeOnly.Parse(agent.QuietStart, CultureInfo.InvariantCulture);
+    var end = TimeOnly.Parse(agent.QuietEnd, CultureInfo.InvariantCulture);
+
+    return start <= end
+        ? now >= start && now < end          // plage dans la meme journee
+        : now >= start || now < end;         // plage traversant minuit
 }
 
 static void Validate(AgentConfig c)

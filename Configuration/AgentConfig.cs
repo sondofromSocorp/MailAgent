@@ -68,4 +68,16 @@ public sealed class RuntimeConfig
     /// false = l'agent agit reellement (notifications + rangement des mails inutiles).
     /// </summary>
     public bool DryRun { get; init; } = true;
+
+    /// <summary>Heures silencieuses : aucune notification durant cette plage. Le rangement n'est pas affecte.</summary>
+    public bool QuietHoursEnabled { get; init; } = true;
+
+    /// <summary>Fuseau pour les heures silencieuses (IANA ou Windows). Defaut : heure de Paris.</summary>
+    public string TimeZone { get; init; } = "Europe/Paris";
+
+    /// <summary>Debut de la plage silencieuse, format HH:mm.</summary>
+    public string QuietStart { get; init; } = "22:00";
+
+    /// <summary>Fin de la plage silencieuse, format HH:mm.</summary>
+    public string QuietEnd { get; init; } = "06:30";
 }
