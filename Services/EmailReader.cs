@@ -119,6 +119,11 @@ public sealed class EmailReader(AgentConfig config)
             target = await root.CreateAsync(folderName, isMessageFolder: true, ct);
         }
 
+        // Marque comme lu avant le deplacement (le flag est conserve dans le dossier cible),
+        // pour faire baisser le compteur de non-lus sur les mails inutiles.
+        if (config.Imap.MarkMovedAsRead)
+            await inbox.AddFlagsAsync(uids, MessageFlags.Seen, silent: true, ct);
+
         await inbox.MoveToAsync(uids, target, ct);
         await client.DisconnectAsync(true, ct);
     }

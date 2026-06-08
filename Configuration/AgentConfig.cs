@@ -38,6 +38,12 @@ public sealed class ImapConfig
 
     /// <summary>Dossiers de classement autorises (le modele choisit parmi eux ; sinon le mail reste en boite).</summary>
     public string[] Folders { get; init; } = ["Pub", "Factures", "Communication"];
+
+    /// <summary>
+    /// Marque comme LU les mails ranges dans un dossier (reduit le compteur de non-lus).
+    /// N'affecte pas les mails gardes en boite (perso / action requise), qui restent non-lus.
+    /// </summary>
+    public bool MarkMovedAsRead { get; init; } = true;
 }
 
 public sealed class ClaudeConfig
