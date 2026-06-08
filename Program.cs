@@ -28,7 +28,6 @@ using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 var reader = new EmailReader(config);
 var classifier = new EmailClassifier(config, http);
 INotifier notifier = new WhatsAppNotifier(config);
-var store = NotificationStore.Load(config.Agent.StatePath);
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
@@ -39,7 +38,7 @@ do
 {
     try
     {
-        await RunOnceAsync(reader, classifier, notifier, store, cts.Token);
+        await RunOnceAsync(reader, classifier, notifier, cts.Token);
     }
     catch (OperationCanceledException) { break; }
     catch (Exception ex)
@@ -60,17 +59,15 @@ Console.WriteLine("Agent arrete.");
 
 static async Task RunOnceAsync(
     EmailReader reader, EmailClassifier classifier, INotifier notifier,
-    NotificationStore store, CancellationToken ct)
+    CancellationToken ct)
 {
     Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Lecture des mails non lus...");
     var emails = await reader.GetUnreadAsync(ct);
-    Console.WriteLine($"  {emails.Count} mail(s) non lu(s).");
+    Console.WriteLine($"  {emails.Count} mail(s) non lu(s) a traiter.");
 
-    var handled = 0;
+    var handledUids = new List<MailKit.UniqueId>(emails.Count);
     foreach (var email in emails)
     {
-        if (store.AlreadyHandled(email.MessageId)) continue;
-
         var result = await classifier.ClassifyAsync(email, ct);
         var tag = result.Important ? "IMPORTANT" : "ignore  ";
         Console.WriteLine($"  [{tag}] {email.Subject}  ({result.Category}) - {result.Reason}");
@@ -81,11 +78,12 @@ static async Task RunOnceAsync(
             Console.WriteLine("    -> notification WhatsApp envoyee.");
         }
 
-        store.MarkHandled(email.MessageId);
-        handled++;
+        handledUids.Add(email.Uid);
     }
 
-    if (handled > 0) await store.SaveAsync(ct);
+    // Anti-doublon : on marque d'un libelle Gmail tout ce qui vient d'etre traite
+    // (important ou non) pour ne pas le reanalyser a la prochaine passe.
+    await reader.AddNotifiedLabelsAsync(handledUids, ct);
 }
 
 static void Validate(AgentConfig c)

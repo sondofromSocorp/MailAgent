@@ -24,6 +24,9 @@ public sealed class ImapConfig
     public string Host { get; init; } = "imap.gmail.com";
     public int Port { get; init; } = 993;
     public int MaxUnreadToProcess { get; init; } = 15;
+
+    /// <summary>Libelle Gmail pose sur les mails deja traites (anti-doublon, remplace state.json).</summary>
+    public string NotifiedLabel { get; init; } = "MailAgentNotified";
 }
 
 public sealed class ClaudeConfig
@@ -48,7 +51,4 @@ public sealed class RuntimeConfig
 
     /// <summary>true = une seule passe puis sortie ; false = boucle continue.</summary>
     public bool RunOnce { get; init; } = true;
-
-    /// <summary>Fichier de suivi des mails deja traites (anti-doublon).</summary>
-    public string StatePath { get; init; } = "state.json";
 }
