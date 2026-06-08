@@ -62,9 +62,9 @@ static async Task RunOnceAsync(
     AgentConfig config, CancellationToken ct)
 {
     var dryRun = config.Agent.DryRun;
-    Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Lecture des mails non lus..."
+    Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Lecture des mails a traiter..."
         + (dryRun ? "  [MODE TEST : aucune action]" : ""));
-    var emails = await reader.GetUnreadAsync(ct);
+    var emails = await reader.GetToProcessAsync(ct);
     Console.WriteLine($"  {emails.Count} mail(s) a traiter.");
 
     var toKeep = new List<MailKit.UniqueId>(emails.Count);   // restent dans la boite (marquage anti-doublon)
@@ -73,17 +73,19 @@ static async Task RunOnceAsync(
     foreach (var email in emails)
     {
         var result = await classifier.ClassifyAsync(email, ct);
+        // On ne notifie QUE les nouveaux mails (non lus) : pas de spam sur le passe deja vu.
+        var notify = result.Important && !email.Seen;
         var tag = result.Important ? "IMPORTANT" : result.Declutter ? "RANGER   " : "garder   ";
-        Console.WriteLine($"  [{tag}] {email.Subject}  ({result.Category}) - {result.Reason}");
+        Console.WriteLine($"  [{tag}] {(email.Seen ? "lu    " : "nonlu ")} {email.Subject}  ({result.Category}) - {result.Reason}");
 
         if (dryRun)
         {
-            if (result.Important) Console.WriteLine("    -> (test) notification WhatsApp");
+            if (notify) Console.WriteLine("    -> (test) notification WhatsApp");
             if (result.Declutter) Console.WriteLine($"    -> (test) deplacement vers '{config.Imap.SortFolder}'");
             continue;
         }
 
-        if (result.Important)
+        if (notify)
         {
             await notifier.NotifyAsync(email, result, ct);
             Console.WriteLine("    -> notification WhatsApp envoyee.");

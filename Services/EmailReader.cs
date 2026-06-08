@@ -16,7 +16,7 @@ public sealed class EmailReader(AgentConfig config)
 {
     private const int BodyPreviewMaxChars = 2000;
 
-    public async Task<IReadOnlyList<EmailItem>> GetUnreadAsync(CancellationToken ct = default)
+    public async Task<IReadOnlyList<EmailItem>> GetToProcessAsync(CancellationToken ct = default)
     {
         using var client = new ImapClient();
         await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
@@ -25,13 +25,22 @@ public sealed class EmailReader(AgentConfig config)
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
 
-        // IMAP standard : non lus QUI N'ONT PAS encore le marqueur de suivi.
-        // -> remplace l'ancien state.json (l'etat anti-doublon vit dans la boite).
-        var uids = await inbox.SearchAsync(
-            SearchQuery.NotSeen.And(SearchQuery.NotKeyword(config.Imap.NotifiedKeyword)), ct);
+        // Tous les mails de la boite (lus comme non lus) QUI N'ONT PAS encore le marqueur de suivi.
+        // L'etat anti-doublon vit dans la boite (pas de state.json).
+        var uids = await inbox.SearchAsync(SearchQuery.NotKeyword(config.Imap.NotifiedKeyword), ct);
 
-        // Les plus recents d'abord, plafonne pour controler le cout.
+        // Les plus recents d'abord, plafonne le nombre traite par passe (cout / duree).
         var selected = uids.Reverse().Take(config.Imap.MaxUnreadToProcess).ToList();
+        if (selected.Count == 0)
+        {
+            await client.DisconnectAsync(true, ct);
+            return [];
+        }
+
+        // Statut lu/non-lu en un seul fetch (pour ne notifier que les nouveaux mails).
+        var seenByUid = new Dictionary<UniqueId, bool>();
+        foreach (var s in await inbox.FetchAsync(selected, MessageSummaryItems.Flags, ct))
+            seenByUid[s.UniqueId] = s.Flags?.HasFlag(MessageFlags.Seen) ?? true;
 
         var items = new List<EmailItem>(selected.Count);
         foreach (var uid in selected)
@@ -45,6 +54,7 @@ public sealed class EmailReader(AgentConfig config)
 
             items.Add(new EmailItem(
                 Uid: uid,
+                Seen: seenByUid.GetValueOrDefault(uid, true),
                 MessageId: string.IsNullOrWhiteSpace(msg.MessageId) ? uid.ToString() : msg.MessageId,
                 From: msg.From.ToString(),
                 Subject: string.IsNullOrWhiteSpace(msg.Subject) ? "(sans objet)" : msg.Subject,
