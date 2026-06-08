@@ -1,0 +1,37 @@
+name: MailAgent
+
+on:
+  # Toutes les 20 minutes (heure UTC). GitHub peut decaler un peu en cas de charge.
+  schedule:
+    - cron: "*/20 * * * *"
+  # Bouton "Run workflow" pour lancer une passe a la demande (utile pour tester).
+  workflow_dispatch:
+
+# Empeche deux passes de tourner en meme temps.
+concurrency:
+  group: mailagent
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Installer .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Lancer une passe de l'agent
+        env:
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          IMAP_PASS: ${{ secrets.IMAP_PASS }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          # Numero WhatsApp destinataire : surcharge WhatsApp:ToNumber de appsettings.json
+          WhatsApp__ToNumber: ${{ secrets.WHATSAPP_TO }}
+        run: dotnet run --project MailAgent.csproj -c Release
