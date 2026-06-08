@@ -72,34 +72,47 @@ static async Task RunOnceAsync(
 
     foreach (var email in emails)
     {
-        var result = await classifier.ClassifyAsync(email, ct);
-        // Notifie uniquement si une ACTION est attendue et que l'utilisateur n'a pas encore repondu.
-        var notify = result.ActionRequired && !email.Answered;
-        // Securite : on ne classe que vers un dossier autorise ; sinon le mail reste en boite.
-        var folder = Array.IndexOf(config.Imap.Folders, result.Folder) >= 0 ? result.Folder : "";
-
-        var tag = notify ? "ACTION" : folder.Length > 0 ? folder : "garder";
-        Console.WriteLine($"  [{tag,-13}] {(email.Seen ? "lu   " : "nonlu")} {email.Subject}  - {result.Reason}");
-
-        if (dryRun)
+        // Un mail en erreur (API, Twilio, IMAP) ne doit pas arreter toute la passe : on le
+        // journalise et on continue. N'etant ni marque ni deplace, il sera retente plus tard.
+        try
         {
-            if (notify) Console.WriteLine("    -> (test) notification WhatsApp");
-            if (folder.Length > 0) Console.WriteLine($"    -> (test) classement dans '{folder}'");
-            continue;
-        }
+            var result = await classifier.ClassifyAsync(email, ct);
+            // Notifie uniquement si une ACTION est attendue et que l'utilisateur n'a pas encore repondu.
+            var notify = result.ActionRequired && !email.Answered;
+            // Un mail demandant une action reste TOUJOURS en boite (jamais range), pour ne pas
+            // le faire disparaitre de la vue. Sinon : on classe vers un dossier autorise uniquement.
+            var folder = result.ActionRequired
+                ? ""
+                : Array.IndexOf(config.Imap.Folders, result.Folder) >= 0 ? result.Folder : "";
 
-        if (notify)
-        {
-            await notifier.NotifyAsync(email, result, ct);
-            Console.WriteLine("    -> notification WhatsApp envoyee.");
-        }
+            var tag = notify ? "ACTION" : folder.Length > 0 ? folder : "garder";
+            Console.WriteLine($"  [{tag,-13}] {(email.Seen ? "lu   " : "nonlu")} {email.Subject}  - {result.Reason}");
 
-        if (folder.Length > 0)
-        {
-            if (!toMove.TryGetValue(folder, out var list)) toMove[folder] = list = [];
-            list.Add(email.Uid);
+            if (dryRun)
+            {
+                if (notify) Console.WriteLine("    -> (test) notification WhatsApp");
+                if (folder.Length > 0) Console.WriteLine($"    -> (test) classement dans '{folder}'");
+                continue;
+            }
+
+            if (notify)
+            {
+                await notifier.NotifyAsync(email, result, ct);
+                Console.WriteLine("    -> notification WhatsApp envoyee.");
+            }
+
+            if (folder.Length > 0)
+            {
+                if (!toMove.TryGetValue(folder, out var list)) toMove[folder] = list = [];
+                list.Add(email.Uid);
+            }
+            else toKeep.Add(email.Uid);
         }
-        else toKeep.Add(email.Uid);
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  [ERREUR       ] {email.Subject}  - {ex.Message}");
+        }
     }
 
     if (dryRun)

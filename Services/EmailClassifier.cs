@@ -50,12 +50,7 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
             }
         };
 
-        using var req = new HttpRequestMessage(HttpMethod.Post, config.Claude.ApiBaseUrl);
-        req.Headers.Add("x-api-key", config.AnthropicApiKey);
-        req.Headers.Add("anthropic-version", config.Claude.AnthropicVersion);
-        req.Content = JsonContent.Create(payload);
-
-        using var resp = await http.SendAsync(req, ct);
+        using var resp = await SendWithRetryAsync(payload, ct);
         resp.EnsureSuccessStatusCode();
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
@@ -82,6 +77,36 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
             return new Classification(false, "", "Reponse du modele non parsable.");
         }
     }
+
+    /// <summary>
+    /// Envoie la requete avec retry + backoff exponentiel sur les erreurs transitoires
+    /// (429 / 5xx). Recree la requete a chaque tentative (HttpRequestMessage non reutilisable).
+    /// </summary>
+    private async Task<HttpResponseMessage> SendWithRetryAsync(object payload, CancellationToken ct)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; ; attempt++)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, config.Claude.ApiBaseUrl);
+            req.Headers.Add("x-api-key", config.AnthropicApiKey);
+            req.Headers.Add("anthropic-version", config.Claude.AnthropicVersion);
+            req.Content = JsonContent.Create(payload);
+
+            var resp = await http.SendAsync(req, ct);
+            if (resp.IsSuccessStatusCode || attempt >= maxAttempts || !IsTransient(resp.StatusCode))
+                return resp;
+
+            var status = (int)resp.StatusCode;
+            resp.Dispose();
+            var delay = TimeSpan.FromMilliseconds(500 * Math.Pow(2, attempt - 1)); // 500ms, 1s
+            Console.WriteLine($"    API Claude {status} : nouvelle tentative {attempt + 1}/{maxAttempts} dans {delay.TotalMilliseconds:0}ms.");
+            await Task.Delay(delay, ct);
+        }
+    }
+
+    /// <summary>Erreur transitoire merita un retry : limite de debit (429) ou panne serveur (5xx).</summary>
+    private static bool IsTransient(System.Net.HttpStatusCode code) =>
+        (int)code == 429 || (int)code >= 500;
 
     /// <summary>Retire d'eventuels backticks ``` autour du JSON.</summary>
     private static string ExtractJson(string s)
