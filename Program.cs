@@ -81,9 +81,9 @@ static async Task RunOnceAsync(
         handledUids.Add(email.Uid);
     }
 
-    // Anti-doublon : on marque d'un libelle Gmail tout ce qui vient d'etre traite
+    // Anti-doublon : on pose le marqueur IMAP sur tout ce qui vient d'etre traite
     // (important ou non) pour ne pas le reanalyser a la prochaine passe.
-    await reader.AddNotifiedLabelsAsync(handledUids, ct);
+    await reader.MarkNotifiedAsync(handledUids, ct);
 }
 
 static void Validate(AgentConfig c)

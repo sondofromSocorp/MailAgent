@@ -25,8 +25,11 @@ public sealed class ImapConfig
     public int Port { get; init; } = 993;
     public int MaxUnreadToProcess { get; init; } = 15;
 
-    /// <summary>Libelle Gmail pose sur les mails deja traites (anti-doublon, remplace state.json).</summary>
-    public string NotifiedLabel { get; init; } = "MailAgentNotified";
+    /// <summary>
+    /// Marqueur IMAP (keyword standard) pose sur les mails deja traites (anti-doublon).
+    /// Portable sur tout serveur IMAP, pas seulement Gmail.
+    /// </summary>
+    public string NotifiedKeyword { get; init; } = "MailAgentNotified";
 }
 
 public sealed class ClaudeConfig
