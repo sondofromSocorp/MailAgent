@@ -10,23 +10,29 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
 {
     private const string SystemPrompt =
         """
-        Tu es un assistant qui trie les emails entrants. Pour chaque email, decide DEUX choses :
+        Tu es un assistant qui trie les emails entrants. Pour chaque email, decide TROIS choses :
 
-        1. important : true si le mail necessite une attention rapide de l'utilisateur.
+        1. important : true si le mail necessite l'attention de l'utilisateur.
            IMPORTANTS : messages personnels directs, urgences, factures/paiements a echeance,
-           rendez-vous, demandes professionnelles necessitant une reponse, alertes securite/connexion
-           suspecte, confirmations de commande/voyage/livraison.
+           rendez-vous, demandes professionnelles, alertes securite/connexion suspecte,
+           confirmations de commande/voyage/livraison, mails ou une reponse est attendue.
 
-        2. declutter : true UNIQUEMENT si le mail est clairement inutile et encombrant
-           (publicite, marketing, newsletter commerciale, promotion, jeu-concours, no-reply marketing).
-           En cas de doute, declutter=false (on garde). Ne mets JAMAIS declutter=true sur un message
-           personnel, une facture, un rendez-vous, une alerte de securite, ou une confirmation
-           de commande/voyage/livraison.
+        2. needs_reply : true si l'expediteur attend une reponse ou une action de l'utilisateur
+           (question directe, demande de document, invitation a confirmer, sollicitation pro).
+           false pour les notifications purement informatives.
+
+        3. declutter : true pour TOUT email commercial ou promotionnel encombrant, SANS hesiter :
+           publicite, marketing, newsletter commerciale, promotion/reduction, offre limitee,
+           jeu-concours, applications de rencontre, reseaux sociaux, alertes immobilieres
+           commerciales, no-reply marketing, digests automatiques. Dans le doute sur un mail
+           clairement commercial, mets declutter=true.
+           NE mets JAMAIS declutter=true sur un message personnel, une facture, un rendez-vous,
+           une alerte de securite, une confirmation de commande/voyage, ou un mail attendant une reponse.
 
         Un mail important n'est JAMAIS declutter.
 
         Reponds UNIQUEMENT avec un objet JSON valide, sans aucun texte ni balise autour, au format exact :
-        {"important": true|false, "declutter": true|false, "category": "string courte", "reason": "phrase courte en francais"}
+        {"important": true|false, "needs_reply": true|false, "declutter": true|false, "category": "string courte", "reason": "phrase courte en francais"}
         """;
 
     public async Task<Classification> ClassifyAsync(EmailItem email, CancellationToken ct = default)
@@ -69,17 +75,19 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
             var important = dto?.Important ?? false;
             // Securite : un mail important n'est jamais range/supprime, meme si le modele se contredit.
             var declutter = (dto?.Declutter ?? false) && !important;
+            var needsReply = dto?.NeedsReply ?? false;
 
             return new Classification(
                 important,
                 declutter,
+                needsReply,
                 string.IsNullOrWhiteSpace(dto?.Category) ? "inconnu" : dto!.Category!,
                 dto?.Reason ?? "");
         }
         catch (JsonException)
         {
             // Reponse non parsable : on garde le mail, sans action, par securite.
-            return new Classification(false, false, "parse_error", "Reponse du modele non parsable.");
+            return new Classification(false, false, false, "parse_error", "Reponse du modele non parsable.");
         }
     }
 
@@ -92,5 +100,5 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
         return first >= 0 && last > first ? s[first..(last + 1)] : s;
     }
 
-    private sealed record ClassificationDto(bool Important, bool Declutter, string? Category, string? Reason);
+    private sealed record ClassificationDto(bool Important, bool Declutter, bool NeedsReply, string? Category, string? Reason);
 }

@@ -26,9 +26,12 @@ public sealed class WhatsAppNotifier : INotifier
             $"Objet : {email.Subject}\n" +
             $"Raison : {classification.Reason}";
 
-        await MessageResource.CreateAsync(
+        var message = await MessageResource.CreateAsync(
             from: new PhoneNumber(_config.WhatsApp.FromNumber),
             to: new PhoneNumber(_config.WhatsApp.ToNumber),
             body: body);
+
+        // Statut Twilio : utile pour diagnostiquer une non-reception (queued/sent/failed/undelivered).
+        Console.WriteLine($"    Twilio: SID={message.Sid} statut={message.Status} erreur={message.ErrorCode?.ToString() ?? "-"}");
     }
 }

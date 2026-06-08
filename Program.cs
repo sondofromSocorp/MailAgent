@@ -73,10 +73,11 @@ static async Task RunOnceAsync(
     foreach (var email in emails)
     {
         var result = await classifier.ClassifyAsync(email, ct);
-        // On ne notifie QUE les nouveaux mails (non lus) : pas de spam sur le passe deja vu.
-        var notify = result.Important && !email.Seen;
+        // Notifie : important ET pas encore repondu ET (nouveau mail non lu OU reponse attendue).
+        // -> les mails lus auxquels on doit encore repondre sont signales ; pas de spam sinon.
+        var notify = result.Important && !email.Answered && (!email.Seen || result.NeedsReply);
         var tag = result.Important ? "IMPORTANT" : result.Declutter ? "RANGER   " : "garder   ";
-        Console.WriteLine($"  [{tag}] {(email.Seen ? "lu    " : "nonlu ")} {email.Subject}  ({result.Category}) - {result.Reason}");
+        Console.WriteLine($"  [{tag}] {(email.Seen ? "lu   " : "nonlu")} {(result.NeedsReply ? "reponse-attendue " : "                 ")} {email.Subject}  ({result.Category}) - {result.Reason}");
 
         if (dryRun)
         {

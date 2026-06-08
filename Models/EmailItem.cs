@@ -6,6 +6,7 @@ namespace MailAgent.Models;
 public sealed record EmailItem(
     UniqueId Uid,
     bool Seen,
+    bool Answered,
     string MessageId,
     string From,
     string Subject,

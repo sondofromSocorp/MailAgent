@@ -25,22 +25,25 @@ public sealed class EmailReader(AgentConfig config)
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
 
-        // Tous les mails de la boite (lus comme non lus) QUI N'ONT PAS encore le marqueur de suivi.
-        // L'etat anti-doublon vit dans la boite (pas de state.json).
-        var uids = await inbox.SearchAsync(SearchQuery.NotKeyword(config.Imap.NotifiedKeyword), ct);
+        // Tous les mails (lus comme non lus) SANS le marqueur de suivi, limites aux MaxAgeDays
+        // derniers jours. L'etat anti-doublon vit dans la boite (pas de state.json).
+        SearchQuery query = SearchQuery.NotKeyword(config.Imap.NotifiedKeyword);
+        if (config.Imap.MaxAgeDays > 0)
+            query = query.And(SearchQuery.DeliveredAfter(DateTime.Now.AddDays(-config.Imap.MaxAgeDays)));
+        var uids = await inbox.SearchAsync(query, ct);
 
         // Les plus recents d'abord, plafonne le nombre traite par passe (cout / duree).
-        var selected = uids.Reverse().Take(config.Imap.MaxUnreadToProcess).ToList();
+        var selected = uids.Reverse().Take(config.Imap.MaxPerPass).ToList();
         if (selected.Count == 0)
         {
             await client.DisconnectAsync(true, ct);
             return [];
         }
 
-        // Statut lu/non-lu en un seul fetch (pour ne notifier que les nouveaux mails).
-        var seenByUid = new Dictionary<UniqueId, bool>();
+        // Drapeaux (lu / repondu) en un seul fetch, pour calibrer les notifications.
+        var flagsByUid = new Dictionary<UniqueId, MessageFlags>();
         foreach (var s in await inbox.FetchAsync(selected, MessageSummaryItems.Flags, ct))
-            seenByUid[s.UniqueId] = s.Flags?.HasFlag(MessageFlags.Seen) ?? true;
+            flagsByUid[s.UniqueId] = s.Flags ?? MessageFlags.None;
 
         var items = new List<EmailItem>(selected.Count);
         foreach (var uid in selected)
@@ -52,9 +55,12 @@ public sealed class EmailReader(AgentConfig config)
             if (body.Length > BodyPreviewMaxChars)
                 body = body[..BodyPreviewMaxChars];
 
+            // Defaut sur (lu + repondu) si les drapeaux manquent : ne pas notifier par securite.
+            var flags = flagsByUid.TryGetValue(uid, out var f) ? f : (MessageFlags.Seen | MessageFlags.Answered);
             items.Add(new EmailItem(
                 Uid: uid,
-                Seen: seenByUid.GetValueOrDefault(uid, true),
+                Seen: flags.HasFlag(MessageFlags.Seen),
+                Answered: flags.HasFlag(MessageFlags.Answered),
                 MessageId: string.IsNullOrWhiteSpace(msg.MessageId) ? uid.ToString() : msg.MessageId,
                 From: msg.From.ToString(),
                 Subject: string.IsNullOrWhiteSpace(msg.Subject) ? "(sans objet)" : msg.Subject,

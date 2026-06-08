@@ -23,7 +23,12 @@ public sealed class ImapConfig
 {
     public string Host { get; init; } = "imap.gmail.com";
     public int Port { get; init; } = 993;
-    public int MaxUnreadToProcess { get; init; } = 15;
+
+    /// <summary>Nombre max de mails traites par passe (cout / duree).</summary>
+    public int MaxPerPass { get; init; } = 50;
+
+    /// <summary>Ne traite que les mails des N derniers jours (0 = pas de limite).</summary>
+    public int MaxAgeDays { get; init; } = 30;
 
     /// <summary>
     /// Marqueur IMAP (keyword standard) pose sur les mails deja traites (anti-doublon).

@@ -4,5 +4,6 @@ namespace MailAgent.Models;
 public sealed record Classification(
     bool Important,
     bool Declutter,
+    bool NeedsReply,
     string Category,
     string Reason);
