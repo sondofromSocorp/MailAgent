@@ -30,6 +30,9 @@ public sealed class ImapConfig
     /// Portable sur tout serveur IMAP, pas seulement Gmail.
     /// </summary>
     public string NotifiedKeyword { get; init; } = "MailAgentNotified";
+
+    /// <summary>Dossier/libelle ou sont deplaces les mails juges inutiles (menage).</summary>
+    public string SortFolder { get; init; } = "MailAgent";
 }
 
 public sealed class ClaudeConfig
@@ -54,4 +57,10 @@ public sealed class RuntimeConfig
 
     /// <summary>true = une seule passe puis sortie ; false = boucle continue.</summary>
     public bool RunOnce { get; init; } = true;
+
+    /// <summary>
+    /// true = mode test : l'agent affiche ce qu'il ferait (notifier / ranger) sans rien modifier.
+    /// false = l'agent agit reellement (notifications + rangement des mails inutiles).
+    /// </summary>
+    public bool DryRun { get; init; } = true;
 }

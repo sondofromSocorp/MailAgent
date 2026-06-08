@@ -38,7 +38,7 @@ do
 {
     try
     {
-        await RunOnceAsync(reader, classifier, notifier, cts.Token);
+        await RunOnceAsync(reader, classifier, notifier, config, cts.Token);
     }
     catch (OperationCanceledException) { break; }
     catch (Exception ex)
@@ -59,18 +59,29 @@ Console.WriteLine("Agent arrete.");
 
 static async Task RunOnceAsync(
     EmailReader reader, EmailClassifier classifier, INotifier notifier,
-    CancellationToken ct)
+    AgentConfig config, CancellationToken ct)
 {
-    Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Lecture des mails non lus...");
+    var dryRun = config.Agent.DryRun;
+    Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Lecture des mails non lus..."
+        + (dryRun ? "  [MODE TEST : aucune action]" : ""));
     var emails = await reader.GetUnreadAsync(ct);
-    Console.WriteLine($"  {emails.Count} mail(s) non lu(s) a traiter.");
+    Console.WriteLine($"  {emails.Count} mail(s) a traiter.");
 
-    var handledUids = new List<MailKit.UniqueId>(emails.Count);
+    var toKeep = new List<MailKit.UniqueId>(emails.Count);   // restent dans la boite (marquage anti-doublon)
+    var toMove = new List<MailKit.UniqueId>(emails.Count);   // ranges dans le dossier dedie
+
     foreach (var email in emails)
     {
         var result = await classifier.ClassifyAsync(email, ct);
-        var tag = result.Important ? "IMPORTANT" : "ignore  ";
+        var tag = result.Important ? "IMPORTANT" : result.Declutter ? "RANGER   " : "garder   ";
         Console.WriteLine($"  [{tag}] {email.Subject}  ({result.Category}) - {result.Reason}");
+
+        if (dryRun)
+        {
+            if (result.Important) Console.WriteLine("    -> (test) notification WhatsApp");
+            if (result.Declutter) Console.WriteLine($"    -> (test) deplacement vers '{config.Imap.SortFolder}'");
+            continue;
+        }
 
         if (result.Important)
         {
@@ -78,12 +89,21 @@ static async Task RunOnceAsync(
             Console.WriteLine("    -> notification WhatsApp envoyee.");
         }
 
-        handledUids.Add(email.Uid);
+        if (result.Declutter) toMove.Add(email.Uid);
+        else toKeep.Add(email.Uid);
     }
 
-    // Anti-doublon : on pose le marqueur IMAP sur tout ce qui vient d'etre traite
-    // (important ou non) pour ne pas le reanalyser a la prochaine passe.
-    await reader.MarkNotifiedAsync(handledUids, ct);
+    if (dryRun)
+    {
+        Console.WriteLine("Mode test : rien n'a ete modifie dans la boite.");
+        return;
+    }
+
+    // Range les inutiles, puis marque le reste pour ne pas le reanalyser.
+    await reader.MoveToFolderAsync(toMove, config.Imap.SortFolder, ct);
+    await reader.MarkNotifiedAsync(toKeep, ct);
+    if (toMove.Count > 0)
+        Console.WriteLine($"  {toMove.Count} mail(s) range(s) dans '{config.Imap.SortFolder}'.");
 }
 
 static void Validate(AgentConfig c)

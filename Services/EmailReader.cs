@@ -75,4 +75,35 @@ public sealed class EmailReader(AgentConfig config)
 
         await client.DisconnectAsync(true, ct);
     }
+
+    /// <summary>
+    /// Deplace les mails juges inutiles vers un dossier dedie (cree s'il n'existe pas).
+    /// Sur Gmail, ce dossier apparait comme un libelle. Rien n'est supprime : tout reste
+    /// recuperable dans ce dossier. Portable sur tout serveur IMAP.
+    /// </summary>
+    public async Task MoveToFolderAsync(IList<UniqueId> uids, string folderName, CancellationToken ct = default)
+    {
+        if (uids.Count == 0) return;
+
+        using var client = new ImapClient();
+        await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+
+        var inbox = client.Inbox;
+        await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
+
+        var root = client.GetFolder(client.PersonalNamespaces[0]);
+        IMailFolder target;
+        try
+        {
+            target = await root.GetSubfolderAsync(folderName, ct);
+        }
+        catch (FolderNotFoundException)
+        {
+            target = await root.CreateAsync(folderName, isMessageFolder: true, ct);
+        }
+
+        await inbox.MoveToAsync(uids, target, ct);
+        await client.DisconnectAsync(true, ct);
+    }
 }

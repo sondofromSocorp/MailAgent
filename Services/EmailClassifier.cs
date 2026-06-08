@@ -10,16 +10,23 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
 {
     private const string SystemPrompt =
         """
-        Tu es un assistant qui trie les emails entrants.
-        Pour chaque email, decide s'il est IMPORTANT (necessite une attention rapide de l'utilisateur) ou non.
+        Tu es un assistant qui trie les emails entrants. Pour chaque email, decide DEUX choses :
 
-        Sont IMPORTANTS : messages personnels directs, urgences, factures/paiements a echeance,
-        rendez-vous, demandes professionnelles necessitant une reponse, alertes securite/connexion suspecte.
+        1. important : true si le mail necessite une attention rapide de l'utilisateur.
+           IMPORTANTS : messages personnels directs, urgences, factures/paiements a echeance,
+           rendez-vous, demandes professionnelles necessitant une reponse, alertes securite/connexion
+           suspecte, confirmations de commande/voyage/livraison.
 
-        Ne sont PAS importants : newsletters, promotions, notifications automatiques, spam, marketing no-reply.
+        2. declutter : true UNIQUEMENT si le mail est clairement inutile et encombrant
+           (publicite, marketing, newsletter commerciale, promotion, jeu-concours, no-reply marketing).
+           En cas de doute, declutter=false (on garde). Ne mets JAMAIS declutter=true sur un message
+           personnel, une facture, un rendez-vous, une alerte de securite, ou une confirmation
+           de commande/voyage/livraison.
+
+        Un mail important n'est JAMAIS declutter.
 
         Reponds UNIQUEMENT avec un objet JSON valide, sans aucun texte ni balise autour, au format exact :
-        {"important": true|false, "category": "string courte", "reason": "phrase courte en francais"}
+        {"important": true|false, "declutter": true|false, "category": "string courte", "reason": "phrase courte en francais"}
         """;
 
     public async Task<Classification> ClassifyAsync(EmailItem email, CancellationToken ct = default)
@@ -59,15 +66,20 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
             var dto = JsonSerializer.Deserialize<ClassificationDto>(text,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
+            var important = dto?.Important ?? false;
+            // Securite : un mail important n'est jamais range/supprime, meme si le modele se contredit.
+            var declutter = (dto?.Declutter ?? false) && !important;
+
             return new Classification(
-                dto?.Important ?? false,
+                important,
+                declutter,
                 string.IsNullOrWhiteSpace(dto?.Category) ? "inconnu" : dto!.Category!,
                 dto?.Reason ?? "");
         }
         catch (JsonException)
         {
-            // Reponse non parsable : on traite comme non important par securite.
-            return new Classification(false, "parse_error", "Reponse du modele non parsable.");
+            // Reponse non parsable : on garde le mail, sans action, par securite.
+            return new Classification(false, false, "parse_error", "Reponse du modele non parsable.");
         }
     }
 
@@ -80,5 +92,5 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
         return first >= 0 && last > first ? s[first..(last + 1)] : s;
     }
 
-    private sealed record ClassificationDto(bool Important, string? Category, string? Reason);
+    private sealed record ClassificationDto(bool Important, bool Declutter, string? Category, string? Reason);
 }
