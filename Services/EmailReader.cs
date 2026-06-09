@@ -73,6 +73,47 @@ public sealed class EmailReader(AgentConfig config)
     }
 
     /// <summary>
+    /// Apercu leger de la boite (sujets / expediteurs / flags) des N derniers jours, pour
+    /// donner du contexte a l'assistant conversationnel. Ne telecharge pas le corps des messages.
+    /// </summary>
+    public async Task<IReadOnlyList<EmailItem>> GetInboxOverviewAsync(int maxAgeDays, int max, CancellationToken ct = default)
+    {
+        using var client = new ImapClient();
+        await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+
+        var inbox = client.Inbox;
+        await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
+
+        SearchQuery query = maxAgeDays > 0
+            ? SearchQuery.DeliveredAfter(DateTime.Now.AddDays(-maxAgeDays))
+            : SearchQuery.All;
+        var uids = await inbox.SearchAsync(query, ct);
+        var selected = uids.Reverse().Take(max).ToList();
+
+        var items = new List<EmailItem>(selected.Count);
+        if (selected.Count > 0)
+        {
+            foreach (var s in await inbox.FetchAsync(selected, MessageSummaryItems.Flags | MessageSummaryItems.Envelope, ct))
+            {
+                var env = s.Envelope;
+                items.Add(new EmailItem(
+                    Uid: s.UniqueId,
+                    Seen: s.Flags?.HasFlag(MessageFlags.Seen) ?? false,
+                    Answered: s.Flags?.HasFlag(MessageFlags.Answered) ?? false,
+                    MessageId: env?.MessageId ?? s.UniqueId.ToString(),
+                    From: env?.From?.ToString() ?? "",
+                    Subject: string.IsNullOrWhiteSpace(env?.Subject) ? "(sans objet)" : env!.Subject,
+                    BodyPreview: "",
+                    Date: env?.Date ?? DateTimeOffset.MinValue));
+            }
+        }
+
+        await client.DisconnectAsync(true, ct);
+        return items;
+    }
+
+    /// <summary>
     /// Pose le marqueur de suivi (keyword IMAP) sur les mails traites.
     /// Ils seront exclus des prochaines passes. N'affecte ni le statut lu/non lu, ni le contenu.
     /// </summary>

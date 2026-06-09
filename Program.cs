@@ -29,6 +29,7 @@ using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 var reader = new EmailReader(config);
 var classifier = new EmailClassifier(config, http);
 INotifier notifier = new TelegramNotifier(config, http);
+var conversation = new TelegramConversation(config, http, reader);
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
@@ -39,7 +40,7 @@ do
 {
     try
     {
-        await RunOnceAsync(reader, classifier, notifier, config, cts.Token);
+        await RunOnceAsync(reader, classifier, notifier, conversation, config, cts.Token);
     }
     catch (OperationCanceledException) { break; }
     catch (Exception ex)
@@ -60,7 +61,7 @@ Console.WriteLine("Agent arrete.");
 
 static async Task RunOnceAsync(
     EmailReader reader, EmailClassifier classifier, INotifier notifier,
-    AgentConfig config, CancellationToken ct)
+    TelegramConversation conversation, AgentConfig config, CancellationToken ct)
 {
     var dryRun = config.Agent.DryRun;
     Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Lecture des mails a traiter..."
@@ -74,6 +75,7 @@ static async Task RunOnceAsync(
 
     var toKeep = new List<MailKit.UniqueId>(emails.Count);              // restent en boite (marquage anti-doublon)
     var toMove = new Dictionary<string, List<MailKit.UniqueId>>();      // dossier -> mails a classer
+    var importantEmails = new List<MailAgent.Models.EmailItem>();       // contexte pour l'assistant Telegram
 
     foreach (var email in emails)
     {
@@ -87,6 +89,7 @@ static async Task RunOnceAsync(
             // pas le faire disparaitre. Sinon : on classe vers une nature autorisee uniquement.
             var important = result.ActionRequired || result.Priority;
             var notify = important && !email.Answered;
+            if (important) importantEmails.Add(email);
             var nature = important
                 ? ""
                 : Array.IndexOf(config.Imap.Folders, result.Folder) >= 0 ? result.Folder : "";
@@ -152,6 +155,9 @@ static async Task RunOnceAsync(
         Console.WriteLine($"  {uids.Count} mail(s) classe(s) dans '{folder}'.");
     }
     await reader.MarkNotifiedAsync(toKeep, ct);
+
+    // Volet conversationnel : lit les messages Telegram en attente et y repond.
+    await conversation.RunAsync(importantEmails, ct);
 }
 
 // Indique si l'heure courante (dans le fuseau configure) tombe dans la plage silencieuse.
