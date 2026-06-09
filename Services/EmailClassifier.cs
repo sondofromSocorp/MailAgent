@@ -17,11 +17,19 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
         """
         Tu es un assistant qui trie les emails entrants. Pour chaque email, decide TROIS choses :
 
-        1. action_required : true UNIQUEMENT si l'utilisateur doit FAIRE quelque chose :
-           repondre a un message, confirmer une presence/disponibilite, payer une facture a
-           echeance, agir avant une date limite, reagir a une alerte de securite/connexion suspecte.
-           false pour les emails purement informatifs (confirmations/recus a conserver,
-           recapitulatifs, accuses de reception, notifications automatiques).
+        1. action_required : true DES QUE l'utilisateur doit FAIRE quelque chose. Exemples :
+           - repondre a un message personnel ou professionnel ;
+           - confirmer une presence/disponibilite, donner suite a une convocation, une reunion
+             ou une assemblee generale (AG) ;
+           - payer une facture a echeance, agir avant une date limite A VENIR ;
+           - reagir a une alerte de securite/connexion suspecte ;
+           - remplir un formulaire demande, finaliser une reservation/commande en cours ;
+           - toute demande emanant de l'ECOLE ou concernant un ENFANT (inscription, sortie, reunion).
+           Mets false pour le purement informatif : confirmations/recus a conserver, recapitulatifs,
+           accuses de reception, suivis de colis, rappels d'agenda automatiques, publicite/marketing,
+           et les echeances DEJA PASSEES.
+           En cas de DOUTE sur la presence d'une action a venir, prefere true : mieux vaut notifier
+           a tort qu'ignorer un mail important. (Mais ne notifie jamais une simple publicite.)
 
         2. action : si action_required=true, resume en une phrase courte l'action CONCRETE a faire
            et son echeance s'il y en a une (ex. "Voter avant le 25 juin ou donner pouvoir avant le 28",

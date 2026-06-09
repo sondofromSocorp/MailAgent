@@ -9,6 +9,7 @@ public sealed class AgentConfig
     public ImapConfig Imap { get; init; } = new();
     public ClaudeConfig Claude { get; init; } = new();
     public WhatsAppConfig WhatsApp { get; init; } = new();
+    public TelegramConfig Telegram { get; init; } = new();
     public RuntimeConfig Agent { get; init; } = new();
     public ClassifierConfig Classifier { get; init; } = new();
 
@@ -84,6 +85,15 @@ public sealed class WhatsAppConfig
 
     /// <summary>Ton numero WhatsApp. Format : whatsapp:+33XXXXXXXXX</summary>
     public string ToNumber { get; init; } = "";
+}
+
+public sealed class TelegramConfig
+{
+    /// <summary>Token du bot, fourni par @BotFather. Injecte via le secret TELEGRAM_BOT_TOKEN.</summary>
+    public string BotToken { get; set; } = "";
+
+    /// <summary>Identifiant du chat destinataire (ton compte). Injecte via le secret TELEGRAM_CHAT_ID.</summary>
+    public string ChatId { get; set; } = "";
 }
 
 public sealed class RuntimeConfig

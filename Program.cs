@@ -18,8 +18,8 @@ configuration.Bind(config);
 config.ImapUser = configuration["IMAP_USER"] ?? config.ImapUser;
 config.ImapPassword = configuration["IMAP_PASS"] ?? config.ImapPassword;
 config.AnthropicApiKey = configuration["ANTHROPIC_API_KEY"] ?? config.AnthropicApiKey;
-config.TwilioAccountSid = configuration["TWILIO_ACCOUNT_SID"] ?? config.TwilioAccountSid;
-config.TwilioAuthToken = configuration["TWILIO_AUTH_TOKEN"] ?? config.TwilioAuthToken;
+config.Telegram.BotToken = configuration["TELEGRAM_BOT_TOKEN"] ?? config.Telegram.BotToken;
+config.Telegram.ChatId = configuration["TELEGRAM_CHAT_ID"] ?? config.Telegram.ChatId;
 
 Validate(config);
 
@@ -28,7 +28,7 @@ using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 
 var reader = new EmailReader(config);
 var classifier = new EmailClassifier(config, http);
-INotifier notifier = new WhatsAppNotifier(config);
+INotifier notifier = new TelegramNotifier(config, http);
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
@@ -180,9 +180,8 @@ static void Validate(AgentConfig c)
     if (string.IsNullOrWhiteSpace(c.ImapUser)) missing.Add("IMAP_USER");
     if (string.IsNullOrWhiteSpace(c.ImapPassword)) missing.Add("IMAP_PASS");
     if (string.IsNullOrWhiteSpace(c.AnthropicApiKey)) missing.Add("ANTHROPIC_API_KEY");
-    if (string.IsNullOrWhiteSpace(c.TwilioAccountSid)) missing.Add("TWILIO_ACCOUNT_SID");
-    if (string.IsNullOrWhiteSpace(c.TwilioAuthToken)) missing.Add("TWILIO_AUTH_TOKEN");
-    if (string.IsNullOrWhiteSpace(c.WhatsApp.ToNumber)) missing.Add("WhatsApp:ToNumber (appsettings.json)");
+    if (string.IsNullOrWhiteSpace(c.Telegram.BotToken)) missing.Add("TELEGRAM_BOT_TOKEN");
+    if (string.IsNullOrWhiteSpace(c.Telegram.ChatId)) missing.Add("TELEGRAM_CHAT_ID");
 
     if (missing.Count == 0) return;
 

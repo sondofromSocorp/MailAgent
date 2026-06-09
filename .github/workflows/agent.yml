@@ -30,8 +30,7 @@ jobs:
           IMAP_USER: ${{ secrets.IMAP_USER }}
           IMAP_PASS: ${{ secrets.IMAP_PASS }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
-          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
-          # Numero WhatsApp destinataire : surcharge WhatsApp:ToNumber de appsettings.json
-          WhatsApp__ToNumber: ${{ secrets.WHATSAPP_TO }}
+          # Notification via bot Telegram (cf. README pour creer le bot et recuperer le chat id)
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: dotnet run --project MailAgent.csproj -c Release
