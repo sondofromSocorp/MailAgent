@@ -82,11 +82,12 @@ static async Task RunOnceAsync(
         try
         {
             var result = await classifier.ClassifyAsync(email, ct);
-            // Notifie uniquement si une ACTION est attendue et que l'utilisateur n'a pas encore repondu.
-            var notify = result.ActionRequired && !email.Answered;
-            // Un mail demandant une action reste TOUJOURS en boite (jamais range), pour ne pas
-            // le faire disparaitre de la vue. Sinon : on classe vers une nature autorisee uniquement.
-            var nature = result.ActionRequired
+            // Important = action a faire OU sujet/personne prioritaire (ex. les enfants). Dans les
+            // deux cas on notifie (si pas deja repondu) et le mail reste TOUJOURS en boite, pour ne
+            // pas le faire disparaitre. Sinon : on classe vers une nature autorisee uniquement.
+            var important = result.ActionRequired || result.Priority;
+            var notify = important && !email.Answered;
+            var nature = important
                 ? ""
                 : Array.IndexOf(config.Imap.Folders, result.Folder) >= 0 ? result.Folder : "";
 
@@ -106,7 +107,7 @@ static async Task RunOnceAsync(
                 continue;
             }
 
-            var tag = notify ? "ACTION" : folder.Length > 0 ? folder : "garder";
+            var tag = notify ? (result.ActionRequired ? "ACTION" : "PRIORITAIRE") : folder.Length > 0 ? folder : "garder";
             Console.WriteLine($"  [{tag,-13}] {(email.Seen ? "lu   " : "nonlu")} {email.Subject}  - {result.Reason}");
             if (notify && result.Action.Length > 0)
                 Console.WriteLine($"      Action : {result.Action}");

@@ -10,6 +10,7 @@ public sealed class AgentConfig
     public ClaudeConfig Claude { get; init; } = new();
     public WhatsAppConfig WhatsApp { get; init; } = new();
     public RuntimeConfig Agent { get; init; } = new();
+    public ClassifierConfig Classifier { get; init; } = new();
 
     // --- Secrets (jamais dans appsettings.json) ---
     public string ImapUser { get; set; } = "";
@@ -52,6 +53,21 @@ public sealed class ImapConfig
     /// N'affecte pas les mails gardes en boite (perso / action requise), qui restent non-lus.
     /// </summary>
     public bool MarkMovedAsRead { get; init; } = true;
+}
+
+public sealed class ClassifierConfig
+{
+    /// <summary>
+    /// Personnes / sujets toujours prioritaires (ex. prenom d'un enfant). Un mail les mentionnant
+    /// est garde en boite et notifie, meme purement informatif.
+    /// </summary>
+    public string[] PriorityTopics { get; init; } = [];
+
+    /// <summary>
+    /// Expediteurs toujours prioritaires (adresses email ou fragments, ex. l'ecole, un proche).
+    /// Meme traitement que les sujets prioritaires.
+    /// </summary>
+    public string[] PrioritySenders { get; init; } = [];
 }
 
 public sealed class ClaudeConfig

@@ -10,6 +10,9 @@ namespace MailAgent.Services;
 /// <summary>Trie un email via l'API Claude (Messages API, modele Haiku par defaut).</summary>
 public sealed class EmailClassifier(AgentConfig config, HttpClient http)
 {
+    // Prompt systeme = base + liste des priorites personnelles (Nayeli, etc.), figee a la construction.
+    private readonly string _systemPrompt = SystemPrompt + BuildPrioritySection(config);
+
     private const string SystemPrompt =
         """
         Tu es un assistant qui trie les emails entrants. Pour chaque email, decide TROIS choses :
@@ -51,8 +54,13 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
            "Free", "Amazon"), SANS accents ni espaces. Sert a creer un sous-dossier de classement.
            Mets "" si l'emetteur n'est pas identifiable ou non pertinent.
 
+        5. priority : true si le mail concerne une PERSONNE ou un SUJET prioritaire, ou vient d'un
+           EXPEDITEUR prioritaire (listes ci-dessous). Un mail prioritaire est TOUJOURS important :
+           il reste en boite (folder="") et l'utilisateur veut etre notifie MEME s'il est purement
+           informatif (ex. une absence scolaire). Sinon false.
+
         Reponds UNIQUEMENT avec un objet JSON valide, sans aucun texte ni balise autour, au format exact :
-        {"action_required": true|false, "action": "phrase ou ''", "folder": "Factures|Banque|Immobilier|ReseauxSociaux|Pub|Communication|ASupprimer|", "source": "Bouygues|...|", "reason": "phrase courte en francais"}
+        {"action_required": true|false, "action": "phrase ou ''", "priority": true|false, "folder": "Factures|Banque|Immobilier|ReseauxSociaux|Pub|Communication|ASupprimer|", "source": "Bouygues|...|", "reason": "phrase courte en francais"}
         """;
 
     public async Task<Classification> ClassifyAsync(EmailItem email, CancellationToken ct = default)
@@ -63,8 +71,8 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
         var payload = new
         {
             model = config.Claude.Model,
-            max_tokens = 200,
-            system = SystemPrompt,
+            max_tokens = 300,
+            system = _systemPrompt,
             messages = new[]
             {
                 new { role = "user", content = userContent }
@@ -90,6 +98,7 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
             return new Classification(
                 dto?.ActionRequired ?? false,
                 dto?.Action?.Trim() ?? "",
+                dto?.Priority ?? false,
                 dto?.Folder?.Trim() ?? "",
                 NormalizeSource(dto?.Source),
                 dto?.Reason ?? "");
@@ -97,7 +106,7 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
         catch (JsonException)
         {
             // Reponse non parsable : on garde le mail en boite, sans action, par securite.
-            return new Classification(false, "", "", "", "Reponse du modele non parsable.");
+            return new Classification(false, "", false, "", "", "Reponse du modele non parsable.");
         }
     }
 
@@ -162,5 +171,25 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
         return cleaned.Length > 40 ? cleaned[..40] : cleaned;
     }
 
-    private sealed record ClassificationDto(bool ActionRequired, string? Action, string? Folder, string? Source, string? Reason);
+    /// <summary>Construit la section "priorites personnelles" du prompt a partir de la config.</summary>
+    private static string BuildPrioritySection(AgentConfig config)
+    {
+        var topics = config.Classifier.PriorityTopics;
+        var senders = config.Classifier.PrioritySenders;
+        var hasTopics = topics is { Length: > 0 };
+        var hasSenders = senders is { Length: > 0 };
+
+        if (!hasTopics && !hasSenders)
+            return "\n\nAucune personne/sujet prioritaire defini : priority=false pour tous les mails.";
+
+        var sb = new StringBuilder("\n\n--- Priorites personnelles ---");
+        if (hasTopics)
+            sb.Append("\nPersonnes/sujets prioritaires : ").Append(string.Join(", ", topics)).Append('.');
+        if (hasSenders)
+            sb.Append("\nExpediteurs prioritaires : ").Append(string.Join(", ", senders)).Append('.');
+        sb.Append("\nTout mail concernant ces personnes/sujets, ou provenant de ces expediteurs, doit avoir priority=true.");
+        return sb.ToString();
+    }
+
+    private sealed record ClassificationDto(bool ActionRequired, string? Action, bool Priority, string? Folder, string? Source, string? Reason);
 }
