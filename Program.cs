@@ -85,10 +85,18 @@ static async Task RunOnceAsync(
             // Notifie uniquement si une ACTION est attendue et que l'utilisateur n'a pas encore repondu.
             var notify = result.ActionRequired && !email.Answered;
             // Un mail demandant une action reste TOUJOURS en boite (jamais range), pour ne pas
-            // le faire disparaitre de la vue. Sinon : on classe vers un dossier autorise uniquement.
-            var folder = result.ActionRequired
+            // le faire disparaitre de la vue. Sinon : on classe vers une nature autorisee uniquement.
+            var nature = result.ActionRequired
                 ? ""
                 : Array.IndexOf(config.Imap.Folders, result.Folder) >= 0 ? result.Folder : "";
+
+            // Sous-dossier par emetteur seulement pour certaines natures (ex. Factures/Bouygues),
+            // afin de retrouver une facture par emetteur sans multiplier les dossiers ailleurs.
+            var folder = nature.Length > 0
+                && result.Source.Length > 0
+                && Array.IndexOf(config.Imap.SubfolderBySource, nature) >= 0
+                    ? $"{nature}/{result.Source}"
+                    : nature;
 
             // Heures silencieuses : une notif attendue est reportee. On laisse le mail en
             // boite SANS le marquer, pour qu'il soit repris et notifie apres la plage silencieuse.
@@ -100,6 +108,8 @@ static async Task RunOnceAsync(
 
             var tag = notify ? "ACTION" : folder.Length > 0 ? folder : "garder";
             Console.WriteLine($"  [{tag,-13}] {(email.Seen ? "lu   " : "nonlu")} {email.Subject}  - {result.Reason}");
+            if (notify && result.Action.Length > 0)
+                Console.WriteLine($"      Action : {result.Action}");
 
             if (dryRun)
             {

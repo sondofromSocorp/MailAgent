@@ -93,11 +93,12 @@ public sealed class EmailReader(AgentConfig config)
     }
 
     /// <summary>
-    /// Deplace les mails juges inutiles vers un dossier dedie (cree s'il n'existe pas).
-    /// Sur Gmail, ce dossier apparait comme un libelle. Rien n'est supprime : tout reste
-    /// recuperable dans ce dossier. Portable sur tout serveur IMAP.
+    /// Deplace les mails vers un dossier dedie (cree s'il n'existe pas). Le chemin peut etre
+    /// hierarchique ("Factures/Bouygues") : chaque niveau manquant est cree. Sur Gmail, ces
+    /// dossiers apparaissent comme des libelles. Rien n'est supprime : tout reste recuperable.
+    /// Portable sur tout serveur IMAP.
     /// </summary>
-    public async Task MoveToFolderAsync(IList<UniqueId> uids, string folderName, CancellationToken ct = default)
+    public async Task MoveToFolderAsync(IList<UniqueId> uids, string folderPath, CancellationToken ct = default)
     {
         if (uids.Count == 0) return;
 
@@ -109,15 +110,7 @@ public sealed class EmailReader(AgentConfig config)
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
 
         var root = client.GetFolder(client.PersonalNamespaces[0]);
-        IMailFolder target;
-        try
-        {
-            target = await root.GetSubfolderAsync(folderName, ct);
-        }
-        catch (FolderNotFoundException)
-        {
-            target = await root.CreateAsync(folderName, isMessageFolder: true, ct);
-        }
+        var target = await EnsureFolderPathAsync(root, folderPath, ct);
 
         // Marque comme lu avant le deplacement (le flag est conserve dans le dossier cible),
         // pour faire baisser le compteur de non-lus sur les mails inutiles.
@@ -126,5 +119,29 @@ public sealed class EmailReader(AgentConfig config)
 
         await inbox.MoveToAsync(uids, target, ct);
         await client.DisconnectAsync(true, ct);
+    }
+
+    /// <summary>
+    /// Resout un chemin hierarchique ("Parent/Enfant") sous la racine, en creant chaque
+    /// niveau manquant. Le decoupage se fait sur '/' (chemin logique) ; MailKit applique
+    /// le separateur reel du serveur lors de la creation de chaque sous-dossier.
+    /// </summary>
+    private static async Task<IMailFolder> EnsureFolderPathAsync(IMailFolder root, string folderPath, CancellationToken ct)
+    {
+        var current = root;
+        foreach (var name in folderPath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            IMailFolder child;
+            try
+            {
+                child = await current.GetSubfolderAsync(name, ct);
+            }
+            catch (FolderNotFoundException)
+            {
+                child = await current.CreateAsync(name, isMessageFolder: true, ct);
+            }
+            current = child;
+        }
+        return current;
     }
 }

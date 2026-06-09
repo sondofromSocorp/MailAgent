@@ -24,6 +24,9 @@ public sealed class WhatsAppNotifier : INotifier
             $"\ud83d\udce7 Mail important\n" +
             $"De : {email.From}\n" +
             $"Objet : {email.Subject}\n" +
+            (classification.Action.Length > 0
+                ? $"\u27a1\ufe0f A faire : {classification.Action}\n"
+                : "") +
             $"Raison : {classification.Reason}";
 
         var message = await MessageResource.CreateAsync(

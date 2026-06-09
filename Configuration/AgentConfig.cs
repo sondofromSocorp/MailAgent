@@ -36,8 +36,16 @@ public sealed class ImapConfig
     /// </summary>
     public string NotifiedKeyword { get; init; } = "MailAgentNotified";
 
-    /// <summary>Dossiers de classement autorises (le modele choisit parmi eux ; sinon le mail reste en boite).</summary>
-    public string[] Folders { get; init; } = ["Pub", "Factures", "Communication"];
+    /// <summary>Dossiers (natures) de classement autorises (le modele choisit parmi eux ; sinon le mail reste en boite).</summary>
+    public string[] Folders { get; init; } =
+        ["Factures", "Banque", "Immobilier", "ReseauxSociaux", "Pub", "Communication", "ASupprimer"];
+
+    /// <summary>
+    /// Natures pour lesquelles on cree un sous-dossier par emetteur (ex. Factures/Bouygues).
+    /// Les autres natures sont rangees a plat. Permet de retrouver une facture par emetteur
+    /// sans multiplier les dossiers partout.
+    /// </summary>
+    public string[] SubfolderBySource { get; init; } = ["Factures", "Banque"];
 
     /// <summary>
     /// Marque comme LU les mails ranges dans un dossier (reduit le compteur de non-lus).
