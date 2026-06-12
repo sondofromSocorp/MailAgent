@@ -9,4 +9,7 @@ namespace MailAgent.Services;
 public interface INotifier
 {
     Task NotifyAsync(EmailItem email, Classification classification, CancellationToken ct = default);
+
+    /// <summary>Envoie un message texte libre (ex. "ajoute a ton agenda").</summary>
+    Task SendTextAsync(string text, CancellationToken ct = default);
 }

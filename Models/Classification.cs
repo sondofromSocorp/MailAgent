@@ -8,6 +8,7 @@ namespace MailAgent.Models;
 /// <param name="Source">Emetteur normalise (ex. Bouygues, EDF, SeLoger) ou "" si non pertinent. Sert de sous-dossier.</param>
 /// <param name="Reason">Phrase courte expliquant le choix.</param>
 /// <param name="Notif">Message de notification en langage naturel (1-2 phrases) si le mail est important ; sinon "".</param>
+/// <param name="Event">Evenement date a ajouter a l'agenda (RDV, AG, convocation...), ou null.</param>
 public sealed record Classification(
     bool ActionRequired,
     string Action,
@@ -15,4 +16,12 @@ public sealed record Classification(
     string Folder,
     string Source,
     string Reason,
-    string Notif);
+    string Notif,
+    EventInfo? Event);
+
+/// <summary>Evenement date extrait d'un mail, destine a l'agenda.</summary>
+/// <param name="Title">Intitule de l'evenement.</param>
+/// <param name="Start">Debut au format ISO 8601 (avec l'heure si connue : 2026-06-16T18:30:00 ; sinon 2026-06-16).</param>
+/// <param name="End">Fin (ISO 8601) ou "" si inconnue.</param>
+/// <param name="Location">Lieu ou "".</param>
+public sealed record EventInfo(string Title, string Start, string End, string Location);

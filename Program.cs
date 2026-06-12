@@ -21,6 +21,9 @@ config.ImapPassword = configuration["IMAP_PASS"] ?? config.ImapPassword;
 config.AnthropicApiKey = configuration["ANTHROPIC_API_KEY"] ?? config.AnthropicApiKey;
 config.Telegram.BotToken = configuration["TELEGRAM_BOT_TOKEN"] ?? config.Telegram.BotToken;
 config.Telegram.ChatId = configuration["TELEGRAM_CHAT_ID"] ?? config.Telegram.ChatId;
+config.Calendar.ClientId = configuration["GOOGLE_CLIENT_ID"] ?? config.Calendar.ClientId;
+config.Calendar.ClientSecret = configuration["GOOGLE_CLIENT_SECRET"] ?? config.Calendar.ClientSecret;
+config.Calendar.RefreshToken = configuration["GOOGLE_REFRESH_TOKEN"] ?? config.Calendar.RefreshToken;
 
 Validate(config);
 
@@ -31,6 +34,7 @@ var reader = new EmailReader(config);
 var classifier = new EmailClassifier(config, http);
 INotifier notifier = new TelegramNotifier(config, http);
 var sender = new EmailSender(config);
+var calendar = new GoogleCalendar(config, http);
 var conversation = new TelegramConversation(config, http, reader, sender);
 
 using var cts = new CancellationTokenSource();
@@ -44,7 +48,7 @@ do
     var processed = 0;
     try
     {
-        processed = await RunOnceAsync(reader, classifier, notifier, conversation, config, cts.Token);
+        processed = await RunOnceAsync(reader, classifier, notifier, conversation, calendar, config, cts.Token);
     }
     catch (OperationCanceledException) { break; }
     catch (Exception ex)
@@ -73,7 +77,7 @@ Console.WriteLine("Agent arrete.");
 
 static async Task<int> RunOnceAsync(
     EmailReader reader, EmailClassifier classifier, INotifier notifier,
-    TelegramConversation conversation, AgentConfig config, CancellationToken ct)
+    TelegramConversation conversation, GoogleCalendar calendar, AgentConfig config, CancellationToken ct)
 {
     var dryRun = config.Agent.DryRun;
     Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Lecture des mails a traiter..."
@@ -146,7 +150,25 @@ static async Task<int> RunOnceAsync(
             if (notify)
             {
                 await notifier.NotifyAsync(email, result, ct);
-                Console.WriteLine("    -> notification WhatsApp envoyee.");
+                Console.WriteLine("    -> notification Telegram envoyee.");
+            }
+
+            // Evenement date detecte -> ajout a l'agenda + notification (si l'agenda est configure).
+            // Le mail est ensuite marque/traite normalement : pas de re-creation aux passes suivantes.
+            if (result.Event is not null && calendar.IsConfigured)
+            {
+                try
+                {
+                    await calendar.CreateEventAsync(result.Event,
+                        $"Ajoute automatiquement depuis le mail \"{email.Subject}\" (de {email.From}).", ct);
+                    await notifier.SendTextAsync(
+                        $"📅 Ajoute a ton agenda : {result.Event.Title} ({result.Event.Start}).", ct);
+                    Console.WriteLine($"      Agenda : evenement cree ({result.Event.Title}).");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"      [Agenda] echec (non bloquant) : {ex.Message}");
+                }
             }
 
             if (folder.Length > 0)

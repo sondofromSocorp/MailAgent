@@ -74,8 +74,16 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
            30 juin a 18h, pense a voter avant le 25." Pas de "De:/Objet:", un vrai message humain.
            Mets "" si le mail n'est ni action_required ni priority.
 
+        7. event : si le mail contient un EVENEMENT DATE concret a noter dans un agenda (rendez-vous,
+           reunion, convocation, assemblee generale, visite, rendez-vous medical, reservation avec
+           date et heure precises), extrais-le en objet :
+           {"title": "intitule court", "start": "AAAA-MM-JJTHH:MM:SS", "end": "... ou ''", "location": "... ou ''"}.
+           start au format ISO 8601 avec l'heure si elle est connue, sinon juste "AAAA-MM-JJ".
+           N'INVENTE RIEN : uniquement si une date explicite figure dans le mail. Ne cree PAS
+           d'evenement pour une simple date marketing/promo ("offre jusqu'au ..."). Sinon : event = null.
+
         Reponds UNIQUEMENT avec un objet JSON valide, sans aucun texte ni balise autour, au format exact :
-        {"action_required": true|false, "action": "phrase ou ''", "priority": true|false, "folder": "Factures|Banque|Immobilier|ReseauxSociaux|Pub|Communication|ASupprimer|", "source": "Bouygues|...|", "reason": "phrase courte en francais", "notif": "message naturel ou ''"}
+        {"action_required": true|false, "action": "phrase ou ''", "priority": true|false, "folder": "Factures|Banque|Immobilier|ReseauxSociaux|Pub|Communication|ASupprimer|", "source": "Bouygues|...|", "reason": "phrase courte en francais", "notif": "message naturel ou ''", "event": {"title":"...","start":"...","end":"...","location":"..."} ou null}
         """;
 
     public async Task<Classification> ClassifyAsync(EmailItem email, CancellationToken ct = default)
@@ -110,6 +118,10 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
             var dto = JsonSerializer.Deserialize<ClassificationDto>(text,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
+            EventInfo? evt = null;
+            if (dto?.Event is { } e && !string.IsNullOrWhiteSpace(e.Title) && !string.IsNullOrWhiteSpace(e.Start))
+                evt = new EventInfo(e.Title!.Trim(), e.Start!.Trim(), e.End?.Trim() ?? "", e.Location?.Trim() ?? "");
+
             return new Classification(
                 dto?.ActionRequired ?? false,
                 dto?.Action?.Trim() ?? "",
@@ -117,12 +129,13 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
                 dto?.Folder?.Trim() ?? "",
                 NormalizeSource(dto?.Source),
                 dto?.Reason ?? "",
-                dto?.Notif?.Trim() ?? "");
+                dto?.Notif?.Trim() ?? "",
+                evt);
         }
         catch (JsonException)
         {
             // Reponse non parsable : on garde le mail en boite, sans action, par securite.
-            return new Classification(false, "", false, "", "", "Reponse du modele non parsable.", "");
+            return new Classification(false, "", false, "", "", "Reponse du modele non parsable.", "", null);
         }
     }
 
@@ -207,5 +220,7 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
         return sb.ToString();
     }
 
-    private sealed record ClassificationDto(bool ActionRequired, string? Action, bool Priority, string? Folder, string? Source, string? Reason, string? Notif);
+    private sealed record ClassificationDto(bool ActionRequired, string? Action, bool Priority, string? Folder, string? Source, string? Reason, string? Notif, EventDto? Event);
+
+    private sealed record EventDto(string? Title, string? Start, string? End, string? Location);
 }

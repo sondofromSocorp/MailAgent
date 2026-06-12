@@ -11,6 +11,7 @@ public sealed class AgentConfig
     public WhatsAppConfig WhatsApp { get; init; } = new();
     public TelegramConfig Telegram { get; init; } = new();
     public SmtpConfig Smtp { get; init; } = new();
+    public GoogleCalendarConfig Calendar { get; init; } = new();
     public RuntimeConfig Agent { get; init; } = new();
     public ClassifierConfig Classifier { get; init; } = new();
 
@@ -102,6 +103,20 @@ public sealed class TelegramConfig
 
     /// <summary>Identifiant du chat destinataire (ton compte). Injecte via le secret TELEGRAM_CHAT_ID.</summary>
     public string ChatId { get; set; } = "";
+}
+
+public sealed class GoogleCalendarConfig
+{
+    /// <summary>Active l'ajout automatique d'evenements a l'agenda. Inactif tant que les secrets manquent.</summary>
+    public bool Enabled { get; init; } = true;
+
+    /// <summary>Fuseau des evenements crees.</summary>
+    public string TimeZone { get; init; } = "Europe/Paris";
+
+    // --- Secrets OAuth Google (injectes via variables d'environnement) ---
+    public string ClientId { get; set; } = "";
+    public string ClientSecret { get; set; } = "";
+    public string RefreshToken { get; set; } = "";
 }
 
 public sealed class SmtpConfig

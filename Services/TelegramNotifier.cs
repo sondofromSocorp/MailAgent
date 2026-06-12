@@ -21,6 +21,11 @@ public sealed class TelegramNotifier(AgentConfig config, HttpClient http) : INot
               (classification.Action.Length > 0 ? $"➡️ A faire : {classification.Action}\n" : "") +
               $"Raison : {classification.Reason}";
 
+        await SendTextAsync(text, ct);
+    }
+
+    public async Task SendTextAsync(string text, CancellationToken ct = default)
+    {
         var url = $"https://api.telegram.org/bot{config.Telegram.BotToken}/sendMessage";
         var payload = new { chat_id = config.Telegram.ChatId, text, disable_web_page_preview = true };
 
