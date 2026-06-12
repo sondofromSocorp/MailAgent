@@ -16,10 +16,15 @@ public sealed class TelegramConversation(AgentConfig config, HttpClient http, Em
     private const string SystemPrompt =
         """
         Tu es l'assistant personnel de messagerie de l'utilisateur, accessible via Telegram.
-        Reponds en francais, de facon BREVE et claire, comme un message de chat (pas un mail).
-        Sers-toi du contexte fourni (mails recents et mails importants detectes) pour repondre
-        aux questions du type "qu'est-ce que j'ai a traiter ?", "resume mes mails", "ai-je une
-        facture ?". Si l'info n'est pas dans le contexte, dis-le simplement.
+        Reponds en francais, clairement et sans bla-bla, comme un message de chat (pas un mail).
+
+        Tu as ACCES au contenu des derniers mails recus (fournis dans le contexte). Tu peux donc :
+        - RESUMER les mails du jour / recents (qui ecrit, de quoi il s'agit, ce qui demande une action) ;
+        - REPONDRE a une question sur un mail PRECIS (par expediteur ou sujet) en t'appuyant sur son
+          contenu (ex. "que dit le mail de la banque ?", "resume le mail du syndic").
+        Si le mail demande n'est PAS dans la liste fournie (probablement trop ancien), dis-le clairement
+        et propose de preciser l'expediteur ou la date.
+
         Tu ne peux pas encore AGIR sur la boite (ranger, supprimer, repondre a un mail) :
         si on te le demande, reponds que cette fonction arrive bientot.
         """;
@@ -98,17 +103,22 @@ public sealed class TelegramConversation(AgentConfig config, HttpClient http, Em
         if (recentImportant.Count > 0)
         {
             sb.AppendLine("Mails importants detectes a la derniere passe :");
-            foreach (var e in recentImportant.Take(15))
+            foreach (var e in recentImportant.Take(10))
                 sb.AppendLine($"- De {e.From} | {e.Subject}");
             sb.AppendLine();
         }
 
-        var recent = await reader.GetInboxOverviewAsync(maxAgeDays: 7, max: 25, ct);
+        // Derniers mails AVEC apercu du contenu, pour pouvoir resumer ou repondre sur un mail precis.
+        var recent = await reader.GetRecentInboxWithBodyAsync(max: 15, ct);
         if (recent.Count > 0)
         {
-            sb.AppendLine("Apercu des mails recents en boite de reception :");
+            sb.AppendLine("Derniers mails recus en boite (avec apercu du contenu) :");
             foreach (var e in recent)
-                sb.AppendLine($"- {(e.Seen ? "lu   " : "nonlu")} | De {e.From} | {e.Subject}");
+            {
+                sb.AppendLine($"--- De: {e.From} | Objet: {e.Subject} | {(e.Seen ? "lu" : "non-lu")} | {e.Date:yyyy-MM-dd} ---");
+                if (e.BodyPreview.Length > 0) sb.AppendLine(e.BodyPreview);
+                sb.AppendLine();
+            }
         }
 
         return sb.Length > 0 ? sb.ToString() : "(aucun mail recent en contexte)";
@@ -119,7 +129,7 @@ public sealed class TelegramConversation(AgentConfig config, HttpClient http, Em
         var payload = new
         {
             model = config.Claude.Model,
-            max_tokens = 500,
+            max_tokens = 800,
             system = SystemPrompt,
             messages = new[]
             {

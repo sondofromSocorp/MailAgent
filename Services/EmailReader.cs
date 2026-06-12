@@ -114,6 +114,53 @@ public sealed class EmailReader(AgentConfig config)
     }
 
     /// <summary>
+    /// Recupere les N mails les plus recents de la boite AVEC un apercu de leur contenu (corps
+    /// tronque), pour permettre a l'assistant conversationnel de les resumer ou de repondre a
+    /// une question sur un mail precis. Lus comme non lus.
+    /// </summary>
+    public async Task<IReadOnlyList<EmailItem>> GetRecentInboxWithBodyAsync(int max, CancellationToken ct = default)
+    {
+        using var client = new ImapClient();
+        await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+
+        var inbox = client.Inbox;
+        await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
+
+        var uids = await inbox.SearchAsync(SearchQuery.All, ct);
+        var selected = uids.Reverse().Take(max).ToList();
+
+        var flagsByUid = new Dictionary<UniqueId, MessageFlags>();
+        if (selected.Count > 0)
+            foreach (var s in await inbox.FetchAsync(selected, MessageSummaryItems.Flags, ct))
+                flagsByUid[s.UniqueId] = s.Flags ?? MessageFlags.None;
+
+        var items = new List<EmailItem>(selected.Count);
+        foreach (var uid in selected)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var msg = await inbox.GetMessageAsync(uid, ct);
+            var body = msg.TextBody ?? msg.HtmlBody ?? "";
+            if (body.Length > 600) body = body[..600];   // apercu court pour le contexte conversationnel
+
+            var flags = flagsByUid.TryGetValue(uid, out var f) ? f : MessageFlags.None;
+            items.Add(new EmailItem(
+                Uid: uid,
+                Seen: flags.HasFlag(MessageFlags.Seen),
+                Answered: flags.HasFlag(MessageFlags.Answered),
+                MessageId: string.IsNullOrWhiteSpace(msg.MessageId) ? uid.ToString() : msg.MessageId,
+                From: msg.From.ToString(),
+                Subject: string.IsNullOrWhiteSpace(msg.Subject) ? "(sans objet)" : msg.Subject,
+                BodyPreview: body,
+                Date: msg.Date));
+        }
+
+        await client.DisconnectAsync(true, ct);
+        return items;
+    }
+
+    /// <summary>
     /// Pose le marqueur de suivi (keyword IMAP) sur les mails traites.
     /// Ils seront exclus des prochaines passes. N'affecte ni le statut lu/non lu, ni le contenu.
     /// </summary>
