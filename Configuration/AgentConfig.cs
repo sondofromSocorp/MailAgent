@@ -10,6 +10,7 @@ public sealed class AgentConfig
     public ClaudeConfig Claude { get; init; } = new();
     public WhatsAppConfig WhatsApp { get; init; } = new();
     public TelegramConfig Telegram { get; init; } = new();
+    public SmtpConfig Smtp { get; init; } = new();
     public RuntimeConfig Agent { get; init; } = new();
     public ClassifierConfig Classifier { get; init; } = new();
 
@@ -94,6 +95,16 @@ public sealed class TelegramConfig
 
     /// <summary>Identifiant du chat destinataire (ton compte). Injecte via le secret TELEGRAM_CHAT_ID.</summary>
     public string ChatId { get; set; } = "";
+}
+
+public sealed class SmtpConfig
+{
+    /// <summary>Serveur SMTP d'envoi (Gmail par defaut). STARTTLS sur le port 587.</summary>
+    public string Host { get; init; } = "smtp.gmail.com";
+    public int Port { get; init; } = 587;
+
+    /// <summary>Dossier IMAP ou est stocke le brouillon en attente de validation (un seul a la fois).</summary>
+    public string PendingFolder { get; init; } = "MailAgentPending";
 }
 
 public sealed class RuntimeConfig

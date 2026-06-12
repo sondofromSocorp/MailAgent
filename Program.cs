@@ -30,7 +30,8 @@ using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 var reader = new EmailReader(config);
 var classifier = new EmailClassifier(config, http);
 INotifier notifier = new TelegramNotifier(config, http);
-var conversation = new TelegramConversation(config, http, reader);
+var sender = new EmailSender(config);
+var conversation = new TelegramConversation(config, http, reader, sender);
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
