@@ -1,9 +1,10 @@
 name: MailAgent
 
 on:
-  # Toutes les 20 minutes (heure UTC). GitHub peut decaler un peu en cas de charge.
+  # Toutes les 5 minutes (minimum autorise par GitHub ; heure UTC, best-effort = parfois decale).
+  # Repo public => minutes illimitees. Le 'concurrency' ci-dessous evite tout chevauchement.
   schedule:
-    - cron: "*/20 * * * *"
+    - cron: "*/5 * * * *"
   # Bouton "Run workflow" pour lancer une passe a la demande (utile pour tester).
   workflow_dispatch:
 
