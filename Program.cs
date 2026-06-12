@@ -87,6 +87,7 @@ static async Task<int> RunOnceAsync(
 
     var toKeep = new List<MailKit.UniqueId>(emails.Count);              // restent en boite (marquage anti-doublon)
     var toMove = new Dictionary<string, List<MailKit.UniqueId>>();      // dossier -> mails a classer
+    var toTrash = new List<MailKit.UniqueId>();                         // expediteurs auto-supprimes -> corbeille
     var importantEmails = new List<MailAgent.Models.EmailItem>();       // contexte pour l'assistant Telegram
 
     foreach (var email in emails)
@@ -95,6 +96,14 @@ static async Task<int> RunOnceAsync(
         // journalise et on continue. N'etant ni marque ni deplace, il sera retente plus tard.
         try
         {
+            // Expediteurs auto-supprimes : direct corbeille, sans analyse ni notification.
+            if (IsBlocked(email.From, config.Classifier.BlockedSenders))
+            {
+                Console.WriteLine($"  [CORBEILLE    ] {(email.Seen ? "lu   " : "nonlu")} {email.Subject}  - expediteur auto-supprime");
+                if (!dryRun) toTrash.Add(email.Uid);
+                continue;
+            }
+
             var result = await classifier.ClassifyAsync(email, ct);
             // Important = action a faire OU sujet/personne prioritaire (ex. les enfants). Dans les
             // deux cas on notifie (si pas deja repondu) et le mail reste TOUJOURS en boite, pour ne
@@ -166,12 +175,27 @@ static async Task<int> RunOnceAsync(
         await reader.MoveToFolderAsync(uids, folder, ct);
         Console.WriteLine($"  {uids.Count} mail(s) classe(s) dans '{folder}'.");
     }
+    if (toTrash.Count > 0)
+    {
+        await reader.MoveToTrashAsync(toTrash, ct);
+        Console.WriteLine($"  {toTrash.Count} mail(s) mis a la corbeille (expediteurs auto-supprimes).");
+    }
     await reader.MarkNotifiedAsync(toKeep, ct);
 
     // Volet conversationnel : lit les messages Telegram en attente et y repond.
     await conversation.RunAsync(importantEmails, ct);
 
     return emails.Count;
+}
+
+// Vrai si l'expediteur correspond a un fragment de la liste des expediteurs auto-supprimes.
+static bool IsBlocked(string from, string[] blocked)
+{
+    if (blocked is null || blocked.Length == 0 || string.IsNullOrEmpty(from)) return false;
+    foreach (var b in blocked)
+        if (!string.IsNullOrWhiteSpace(b) && from.Contains(b, StringComparison.OrdinalIgnoreCase))
+            return true;
+    return false;
 }
 
 // Indique si l'heure courante (dans le fuseau configure) tombe dans la plage silencieuse.

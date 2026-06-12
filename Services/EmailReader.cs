@@ -210,6 +210,28 @@ public sealed class EmailReader(AgentConfig config)
     }
 
     /// <summary>
+    /// Deplace les mails vers la CORBEILLE du serveur (sur Gmail : [Gmail]/Corbeille, recuperable
+    /// 30 jours). Utilise pour les expediteurs auto-supprimes. Rien n'est efface definitivement.
+    /// </summary>
+    public async Task MoveToTrashAsync(IList<UniqueId> uids, CancellationToken ct = default)
+    {
+        if (uids.Count == 0) return;
+
+        using var client = new ImapClient();
+        await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+
+        var inbox = client.Inbox;
+        await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
+
+        var trash = client.GetFolder(SpecialFolder.Trash)
+            ?? throw new InvalidOperationException("Dossier Corbeille introuvable sur le serveur IMAP.");
+        await inbox.MoveToAsync(uids, trash, ct);
+
+        await client.DisconnectAsync(true, ct);
+    }
+
+    /// <summary>
     /// Resout un chemin hierarchique ("Parent/Enfant") sous la racine, en creant chaque
     /// niveau manquant. Le decoupage se fait sur '/' (chemin logique) ; MailKit applique
     /// le separateur reel du serveur lors de la creation de chaque sous-dossier.

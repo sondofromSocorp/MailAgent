@@ -70,6 +70,13 @@ public sealed class ClassifierConfig
     /// Meme traitement que les sujets prioritaires.
     /// </summary>
     public string[] PrioritySenders { get; init; } = [];
+
+    /// <summary>
+    /// Expediteurs auto-supprimes (fragments d'adresse, ex. "news.saint-maclou.com"). Tout mail
+    /// dont l'expediteur correspond part DIRECTEMENT a la corbeille, sans analyse ni notification.
+    /// La corbeille Gmail est recuperable 30 jours.
+    /// </summary>
+    public string[] BlockedSenders { get; init; } = [];
 }
 
 public sealed class ClaudeConfig
