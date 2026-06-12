@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using MailAgent.Configuration;
 using MailAgent.Services;
@@ -36,11 +37,13 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
 Console.WriteLine($"MailAgent demarre. Mode : {(config.Agent.RunOnce ? "une passe" : "boucle continue")}.");
 
+var runClock = Stopwatch.StartNew();
 do
 {
+    var processed = 0;
     try
     {
-        await RunOnceAsync(reader, classifier, notifier, conversation, config, cts.Token);
+        processed = await RunOnceAsync(reader, classifier, notifier, conversation, config, cts.Token);
     }
     catch (OperationCanceledException) { break; }
     catch (Exception ex)
@@ -48,7 +51,15 @@ do
         Console.WriteLine($"[ERREUR] {ex.Message}");
     }
 
-    if (config.Agent.RunOnce) break;
+    if (config.Agent.RunOnce)
+    {
+        // Vide le backlog : tant qu'une fournee PLEINE a ete traitee (donc il reste probablement
+        // des mails) et que le budget temps n'est pas atteint, on enchaine une autre fournee.
+        var budgetReached = config.Agent.MaxRunSeconds > 0
+            && runClock.Elapsed.TotalSeconds >= config.Agent.MaxRunSeconds;
+        if (processed >= config.Imap.MaxPerPass && !budgetReached) continue;
+        break;
+    }
 
     Console.WriteLine($"Prochaine verification dans {config.Agent.PollIntervalSeconds}s... (Ctrl+C pour arreter)");
     try { await Task.Delay(TimeSpan.FromSeconds(config.Agent.PollIntervalSeconds), cts.Token); }
@@ -59,7 +70,7 @@ while (!cts.IsCancellationRequested);
 Console.WriteLine("Agent arrete.");
 
 
-static async Task RunOnceAsync(
+static async Task<int> RunOnceAsync(
     EmailReader reader, EmailClassifier classifier, INotifier notifier,
     TelegramConversation conversation, AgentConfig config, CancellationToken ct)
 {
@@ -145,7 +156,7 @@ static async Task RunOnceAsync(
     if (dryRun)
     {
         Console.WriteLine("Mode test : rien n'a ete modifie dans la boite.");
-        return;
+        return emails.Count;
     }
 
     // Classe chaque mail dans son dossier, puis marque ceux gardes en boite (anti-doublon).
@@ -158,6 +169,8 @@ static async Task RunOnceAsync(
 
     // Volet conversationnel : lit les messages Telegram en attente et y repond.
     await conversation.RunAsync(importantEmails, ct);
+
+    return emails.Count;
 }
 
 // Indique si l'heure courante (dans le fuseau configure) tombe dans la plage silencieuse.

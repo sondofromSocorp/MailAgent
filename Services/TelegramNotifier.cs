@@ -12,12 +12,14 @@ public sealed class TelegramNotifier(AgentConfig config, HttpClient http) : INot
 {
     public async Task NotifyAsync(EmailItem email, Classification classification, CancellationToken ct = default)
     {
-        var text =
-            $"📧 Mail important\n" +
-            $"De : {email.From}\n" +
-            $"Objet : {email.Subject}\n" +
-            (classification.Action.Length > 0 ? $"➡️ A faire : {classification.Action}\n" : "") +
-            $"Raison : {classification.Reason}";
+        // Message en langage naturel redige par le modele ; repli sur un format simple si absent.
+        var text = classification.Notif.Length > 0
+            ? $"📩 {classification.Notif}"
+            : $"📧 Mail important\n" +
+              $"De : {email.From}\n" +
+              $"Objet : {email.Subject}\n" +
+              (classification.Action.Length > 0 ? $"➡️ A faire : {classification.Action}\n" : "") +
+              $"Raison : {classification.Reason}";
 
         var url = $"https://api.telegram.org/bot{config.Telegram.BotToken}/sendMessage";
         var payload = new { chat_id = config.Telegram.ChatId, text, disable_web_page_preview = true };

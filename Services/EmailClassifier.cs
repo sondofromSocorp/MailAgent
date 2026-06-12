@@ -67,8 +67,15 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
            il reste en boite (folder="") et l'utilisateur veut etre notifie MEME s'il est purement
            informatif (ex. une absence scolaire). Sinon false.
 
+        6. notif : UNIQUEMENT si action_required=true OU priority=true, redige un message de
+           notification en LANGAGE NATUREL (1 a 2 phrases courtes), comme un assistant qui previent
+           l'utilisateur : qui ecrit, de quoi il s'agit, et ce qu'il faut faire / la date clef.
+           Exemple : "Le Conseil Syndical t'envoie la convocation a l'AG de copropriete : c'est le
+           30 juin a 18h, pense a voter avant le 25." Pas de "De:/Objet:", un vrai message humain.
+           Mets "" si le mail n'est ni action_required ni priority.
+
         Reponds UNIQUEMENT avec un objet JSON valide, sans aucun texte ni balise autour, au format exact :
-        {"action_required": true|false, "action": "phrase ou ''", "priority": true|false, "folder": "Factures|Banque|Immobilier|ReseauxSociaux|Pub|Communication|ASupprimer|", "source": "Bouygues|...|", "reason": "phrase courte en francais"}
+        {"action_required": true|false, "action": "phrase ou ''", "priority": true|false, "folder": "Factures|Banque|Immobilier|ReseauxSociaux|Pub|Communication|ASupprimer|", "source": "Bouygues|...|", "reason": "phrase courte en francais", "notif": "message naturel ou ''"}
         """;
 
     public async Task<Classification> ClassifyAsync(EmailItem email, CancellationToken ct = default)
@@ -109,12 +116,13 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
                 dto?.Priority ?? false,
                 dto?.Folder?.Trim() ?? "",
                 NormalizeSource(dto?.Source),
-                dto?.Reason ?? "");
+                dto?.Reason ?? "",
+                dto?.Notif?.Trim() ?? "");
         }
         catch (JsonException)
         {
             // Reponse non parsable : on garde le mail en boite, sans action, par securite.
-            return new Classification(false, "", false, "", "", "Reponse du modele non parsable.");
+            return new Classification(false, "", false, "", "", "Reponse du modele non parsable.", "");
         }
     }
 
@@ -199,5 +207,5 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
         return sb.ToString();
     }
 
-    private sealed record ClassificationDto(bool ActionRequired, string? Action, bool Priority, string? Folder, string? Source, string? Reason);
+    private sealed record ClassificationDto(bool ActionRequired, string? Action, bool Priority, string? Folder, string? Source, string? Reason, string? Notif);
 }

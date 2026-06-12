@@ -104,6 +104,13 @@ public sealed class RuntimeConfig
     public bool RunOnce { get; init; } = true;
 
     /// <summary>
+    /// En mode une passe (RunOnce=true), enchaine les fournees de MaxPerPass tant qu'il reste
+    /// des mails a traiter, jusqu'a ce budget de temps (secondes). Vide le backlog plus vite tout
+    /// en restant sous le timeout du CI (10 min sur GitHub Actions). 0 = une seule fournee.
+    /// </summary>
+    public int MaxRunSeconds { get; init; } = 480;
+
+    /// <summary>
     /// true = mode test : l'agent affiche ce qu'il ferait (notifier / ranger) sans rien modifier.
     /// false = l'agent agit reellement (notifications + rangement des mails inutiles).
     /// </summary>
