@@ -182,7 +182,11 @@ public sealed class TelegramConversation(AgentConfig config, HttpClient http, Em
         req.Content = JsonContent.Create(payload);
 
         using var resp = await http.SendAsync(req, ct);
-        resp.EnsureSuccessStatusCode();
+        if (!resp.IsSuccessStatusCode)
+        {
+            var detail = await resp.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException($"Claude a refuse la requete (HTTP {(int)resp.StatusCode}) : {detail}");
+        }
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         var raw = doc.RootElement.GetProperty("content")[0].GetProperty("text").GetString() ?? "{}";
@@ -255,10 +259,36 @@ public sealed class TelegramConversation(AgentConfig config, HttpClient http, Em
 
     private async Task SendTextAsync(string text, CancellationToken ct)
     {
+        // Telegram refuse (HTTP 400) un message vide ou de plus de 4096 caracteres : on garantit
+        // un texte non vide et on decoupe les longues reponses (ex. un resume) en plusieurs envois.
+        if (string.IsNullOrWhiteSpace(text)) text = "(vide)";
+
         var url = $"https://api.telegram.org/bot{config.Telegram.BotToken}/sendMessage";
-        var payload = new { chat_id = config.Telegram.ChatId, text, disable_web_page_preview = true };
-        using var resp = await http.PostAsJsonAsync(url, payload, ct);
-        resp.EnsureSuccessStatusCode();
+        foreach (var chunk in SplitForTelegram(text))
+        {
+            var payload = new { chat_id = config.Telegram.ChatId, text = chunk, disable_web_page_preview = true };
+            using var resp = await http.PostAsJsonAsync(url, payload, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                // Le corps Telegram explique le refus (ex. message trop long, chat introuvable) : utile pour diagnostiquer.
+                var detail = await resp.Content.ReadAsStringAsync(ct);
+                throw new InvalidOperationException($"Telegram a refuse l'envoi (HTTP {(int)resp.StatusCode}) : {detail}");
+            }
+        }
+    }
+
+    /// <summary>Decoupe un texte en morceaux sous la limite Telegram (4096 car.), de preference sur un saut de ligne.</summary>
+    private static IEnumerable<string> SplitForTelegram(string text)
+    {
+        const int max = 4000; // marge sous la limite stricte de 4096
+        while (text.Length > max)
+        {
+            var cut = text.LastIndexOf('\n', max - 1);
+            if (cut <= 0) cut = max; // pas de saut de ligne exploitable : on coupe net
+            yield return text[..cut];
+            text = text[cut..].TrimStart('\n');
+        }
+        yield return text;
     }
 
     /// <summary>Retire d'eventuels backticks autour du JSON.</summary>

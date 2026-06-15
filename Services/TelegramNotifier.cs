@@ -26,17 +26,38 @@ public sealed class TelegramNotifier(AgentConfig config, HttpClient http) : INot
 
     public async Task SendTextAsync(string text, CancellationToken ct = default)
     {
+        // Telegram refuse (HTTP 400) un message vide ou de plus de 4096 caracteres : on garantit
+        // un texte non vide et on decoupe au besoin (une notif en langage naturel peut etre longue).
+        if (string.IsNullOrWhiteSpace(text)) text = "(vide)";
+
         var url = $"https://api.telegram.org/bot{config.Telegram.BotToken}/sendMessage";
-        var payload = new { chat_id = config.Telegram.ChatId, text, disable_web_page_preview = true };
-
-        using var resp = await http.PostAsJsonAsync(url, payload, ct);
-        if (!resp.IsSuccessStatusCode)
+        foreach (var chunk in SplitForTelegram(text))
         {
-            // Le corps de la reponse Telegram explique l'echec (ex. chat introuvable, token invalide).
-            var detail = await resp.Content.ReadAsStringAsync(ct);
-            throw new InvalidOperationException($"Telegram a refuse l'envoi (HTTP {(int)resp.StatusCode}) : {detail}");
-        }
+            var payload = new { chat_id = config.Telegram.ChatId, text = chunk, disable_web_page_preview = true };
 
-        Console.WriteLine($"    Telegram: message envoye (HTTP {(int)resp.StatusCode}).");
+            using var resp = await http.PostAsJsonAsync(url, payload, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                // Le corps de la reponse Telegram explique l'echec (ex. chat introuvable, token invalide, message trop long).
+                var detail = await resp.Content.ReadAsStringAsync(ct);
+                throw new InvalidOperationException($"Telegram a refuse l'envoi (HTTP {(int)resp.StatusCode}) : {detail}");
+            }
+
+            Console.WriteLine($"    Telegram: message envoye (HTTP {(int)resp.StatusCode}).");
+        }
+    }
+
+    /// <summary>Decoupe un texte en morceaux sous la limite Telegram (4096 car.), de preference sur un saut de ligne.</summary>
+    private static IEnumerable<string> SplitForTelegram(string text)
+    {
+        const int max = 4000; // marge sous la limite stricte de 4096
+        while (text.Length > max)
+        {
+            var cut = text.LastIndexOf('\n', max - 1);
+            if (cut <= 0) cut = max; // pas de saut de ligne exploitable : on coupe net
+            yield return text[..cut];
+            text = text[cut..].TrimStart('\n');
+        }
+        yield return text;
     }
 }
