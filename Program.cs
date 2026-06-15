@@ -96,7 +96,7 @@ static async Task<int> RunOnceAsync(
 
     foreach (var email in emails)
     {
-        // Un mail en erreur (API, Twilio, IMAP) ne doit pas arreter toute la passe : on le
+        // Un mail en erreur (API, IMAP) ne doit pas arreter toute la passe : on le
         // journalise et on continue. N'etant ni marque ni deplace, il sera retente plus tard.
         try
         {
@@ -142,7 +142,7 @@ static async Task<int> RunOnceAsync(
 
             if (dryRun)
             {
-                if (notify) Console.WriteLine("    -> (test) notification WhatsApp");
+                if (notify) Console.WriteLine("    -> (test) notification Telegram");
                 if (folder.Length > 0) Console.WriteLine($"    -> (test) classement dans '{folder}'");
                 continue;
             }

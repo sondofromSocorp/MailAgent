@@ -8,7 +8,6 @@ public sealed class AgentConfig
 {
     public ImapConfig Imap { get; init; } = new();
     public ClaudeConfig Claude { get; init; } = new();
-    public WhatsAppConfig WhatsApp { get; init; } = new();
     public TelegramConfig Telegram { get; init; } = new();
     public SmtpConfig Smtp { get; init; } = new();
     public GoogleCalendarConfig Calendar { get; init; } = new();
@@ -19,8 +18,6 @@ public sealed class AgentConfig
     public string ImapUser { get; set; } = "";
     public string ImapPassword { get; set; } = "";
     public string AnthropicApiKey { get; set; } = "";
-    public string TwilioAccountSid { get; set; } = "";
-    public string TwilioAuthToken { get; set; } = "";
 }
 
 public sealed class ImapConfig
@@ -85,15 +82,6 @@ public sealed class ClaudeConfig
     public string Model { get; init; } = "claude-haiku-4-5-20251001";
     public string ApiBaseUrl { get; init; } = "https://api.anthropic.com/v1/messages";
     public string AnthropicVersion { get; init; } = "2023-06-01";
-}
-
-public sealed class WhatsAppConfig
-{
-    /// <summary>Numero Twilio (sandbox par defaut). Format : whatsapp:+14155238886</summary>
-    public string FromNumber { get; init; } = "whatsapp:+14155238886";
-
-    /// <summary>Ton numero WhatsApp. Format : whatsapp:+33XXXXXXXXX</summary>
-    public string ToNumber { get; init; } = "";
 }
 
 public sealed class TelegramConfig
