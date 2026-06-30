@@ -179,6 +179,24 @@ static async Task<int> RunOnceAsync(
             else toKeep.Add(email.Uid);
         }
         catch (OperationCanceledException) { throw; }
+        catch (ClaudeApiException ex) when (ex.Fatal)
+        {
+            // Erreur de compte (credits epuisses, cle invalide) : on previent UNE fois et on
+            // arrete la passe. Les mails non traites seront repris a la prochaine execution.
+            Console.WriteLine($"  [API BLOQUEE  ] {ex.Message}");
+            if (!dryRun)
+            {
+                try
+                {
+                    await notifier.SendTextAsync(
+                        "⚠️ Tri des mails en pause : l'API Claude a refuse la requete.\n"
+                        + ex.Message
+                        + "\nVerifie le solde de credits (console.anthropic.com) ou la cle ANTHROPIC_API_KEY.", ct);
+                }
+                catch (Exception nex) { Console.WriteLine($"    (alerte Telegram non envoyee : {nex.Message})"); }
+            }
+            throw; // stoppe la passe en cours : inutile de tenter les autres mails
+        }
         catch (Exception ex)
         {
             Console.WriteLine($"  [ERREUR       ] {email.Subject}  - {ex.Message}");

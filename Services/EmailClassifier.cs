@@ -103,7 +103,15 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
         };
 
         using var resp = await SendWithRetryAsync(payload, ct);
-        resp.EnsureSuccessStatusCode();
+        if (!resp.IsSuccessStatusCode)
+        {
+            var status = (int)resp.StatusCode;
+            var detail = ExtractApiError(await resp.Content.ReadAsStringAsync(ct));
+            // 400 (credits epuisses / quota / requete invalide) et 401/403 (cle invalide) sont des
+            // erreurs de COMPTE, pas par-mail : inutile de retenter les autres mails de la passe.
+            var fatal = status is 400 or 401 or 403;
+            throw new ClaudeApiException($"API Claude {status} : {detail}", fatal);
+        }
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         var text = doc.RootElement
@@ -169,6 +177,20 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
     private static bool IsTransient(System.Net.HttpStatusCode code) =>
         (int)code == 429 || (int)code >= 500;
 
+    /// <summary>Extrait le message d'erreur lisible du corps JSON de l'API (champ error.message).</summary>
+    private static string ExtractApiError(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("error", out var err)
+                && err.TryGetProperty("message", out var msg))
+                return msg.GetString() ?? body;
+        }
+        catch (JsonException) { /* corps non JSON : on renvoie le brut (tronque) */ }
+        return body.Length > 300 ? body[..300] : body;
+    }
+
     /// <summary>Retire d'eventuels backticks ``` autour du JSON.</summary>
     private static string ExtractJson(string s)
     {
@@ -223,4 +245,13 @@ public sealed class EmailClassifier(AgentConfig config, HttpClient http)
     private sealed record ClassificationDto(bool ActionRequired, string? Action, bool Priority, string? Folder, string? Source, string? Reason, string? Notif, EventDto? Event);
 
     private sealed record EventDto(string? Title, string? Start, string? End, string? Location);
+}
+
+/// <summary>
+/// Erreur renvoyee par l'API Claude. <see cref="Fatal"/> = erreur de COMPTE
+/// (credits epuisses, cle invalide) qui rend inutile la suite de la passe.
+/// </summary>
+public sealed class ClaudeApiException(string message, bool fatal) : Exception(message)
+{
+    public bool Fatal { get; } = fatal;
 }
