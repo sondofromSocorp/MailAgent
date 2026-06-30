@@ -34,4 +34,8 @@ jobs:
           # Notification via bot Telegram (cf. README pour creer le bot et recuperer le chat id)
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Agenda auto (Google Calendar) : inactif tant que ces trois secrets ne sont pas crees dans le repo.
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
         run: dotnet run --project MailAgent.csproj -c Release
