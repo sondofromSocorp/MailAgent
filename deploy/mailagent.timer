@@ -1,0 +1,12 @@
+[Unit]
+Description=Lance MailAgent toutes les 5 minutes
+
+[Timer]
+# 2 min apres le boot (laisse Ollama demarrer), puis 5 min apres la FIN de chaque passe
+# (OnUnitInactiveSec) : pas de chevauchement possible entre deux passes.
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

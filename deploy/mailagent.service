@@ -1,0 +1,12 @@
+[Unit]
+Description=MailAgent - tri des mails (une passe puis sortie)
+Wants=network-online.target ollama.service
+After=network-online.target ollama.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/mailagent/publish
+EnvironmentFile=/etc/mailagent.env
+ExecStart=/usr/bin/dotnet /opt/mailagent/publish/MailAgent.dll
+# Une passe peut encha^ner plusieurs fournees (MaxRunSeconds=480) + latence du LLM local.
+TimeoutStartSec=900
