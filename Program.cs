@@ -30,17 +30,24 @@ Validate(config);
 // --- Composition des services ---
 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 
+// Le LLM a son propre HttpClient : un modele local (Ollama sur petit VPS) peut mettre bien
+// plus de 60s a generer une reponse, la ou l'API Claude repond en quelques secondes.
+var useOllama = config.Llm.Provider.Trim().Equals("ollama", StringComparison.OrdinalIgnoreCase);
+using var llmHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(useOllama ? 300 : 60) };
+ILlmClient llm = useOllama ? new OllamaLlmClient(config, llmHttp) : new ClaudeLlmClient(config, llmHttp);
+
 var reader = new EmailReader(config);
-var classifier = new EmailClassifier(config, http);
+var classifier = new EmailClassifier(config, llm);
 INotifier notifier = new TelegramNotifier(config, http);
 var sender = new EmailSender(config);
 var calendar = new GoogleCalendar(config, http);
-var conversation = new TelegramConversation(config, http, reader, sender);
+var conversation = new TelegramConversation(config, http, llm, reader, sender);
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
-Console.WriteLine($"MailAgent demarre. Mode : {(config.Agent.RunOnce ? "une passe" : "boucle continue")}.");
+Console.WriteLine($"MailAgent demarre. Mode : {(config.Agent.RunOnce ? "une passe" : "boucle continue")}. "
+    + $"LLM : {(useOllama ? $"Ollama ({config.Ollama.Model} sur {config.Ollama.BaseUrl})" : $"Claude ({config.Claude.Model})")}.");
 
 var runClock = Stopwatch.StartNew();
 do
@@ -179,19 +186,21 @@ static async Task<int> RunOnceAsync(
             else toKeep.Add(email.Uid);
         }
         catch (OperationCanceledException) { throw; }
-        catch (ClaudeApiException ex) when (ex.Fatal)
+        catch (LlmException ex) when (ex.Fatal)
         {
-            // Erreur de compte (credits epuisses, cle invalide) : on previent UNE fois et on
-            // arrete la passe. Les mails non traites seront repris a la prochaine execution.
-            Console.WriteLine($"  [API BLOQUEE  ] {ex.Message}");
+            // Erreur d'infrastructure LLM (credits/cle Claude, serveur Ollama down ou modele
+            // absent) : on previent UNE fois et on arrete la passe. Les mails non traites
+            // seront repris a la prochaine execution.
+            Console.WriteLine($"  [LLM BLOQUE   ] {ex.Message}");
             if (!dryRun)
             {
                 try
                 {
                     await notifier.SendTextAsync(
-                        "⚠️ Tri des mails en pause : l'API Claude a refuse la requete.\n"
+                        "⚠️ Tri des mails en pause : le modele a refuse la requete.\n"
                         + ex.Message
-                        + "\nVerifie le solde de credits (console.anthropic.com) ou la cle ANTHROPIC_API_KEY.", ct);
+                        + "\nClaude : verifie les credits (console.anthropic.com) ou la cle. "
+                        + "Ollama : verifie que le serveur tourne et que le modele est installe.", ct);
                 }
                 catch (Exception nex) { Console.WriteLine($"    (alerte Telegram non envoyee : {nex.Message})"); }
             }
@@ -263,7 +272,9 @@ static void Validate(AgentConfig c)
     var missing = new List<string>();
     if (string.IsNullOrWhiteSpace(c.ImapUser)) missing.Add("IMAP_USER");
     if (string.IsNullOrWhiteSpace(c.ImapPassword)) missing.Add("IMAP_PASS");
-    if (string.IsNullOrWhiteSpace(c.AnthropicApiKey)) missing.Add("ANTHROPIC_API_KEY");
+    // La cle Anthropic n'est requise que si le fournisseur LLM est Claude (Ollama = sans cle).
+    if (!c.Llm.Provider.Trim().Equals("ollama", StringComparison.OrdinalIgnoreCase)
+        && string.IsNullOrWhiteSpace(c.AnthropicApiKey)) missing.Add("ANTHROPIC_API_KEY");
     if (string.IsNullOrWhiteSpace(c.Telegram.BotToken)) missing.Add("TELEGRAM_BOT_TOKEN");
     if (string.IsNullOrWhiteSpace(c.Telegram.ChatId)) missing.Add("TELEGRAM_CHAT_ID");
 

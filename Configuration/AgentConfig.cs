@@ -7,7 +7,9 @@ namespace MailAgent.Configuration;
 public sealed class AgentConfig
 {
     public ImapConfig Imap { get; init; } = new();
+    public LlmConfig Llm { get; init; } = new();
     public ClaudeConfig Claude { get; init; } = new();
+    public OllamaConfig Ollama { get; init; } = new();
     public TelegramConfig Telegram { get; init; } = new();
     public SmtpConfig Smtp { get; init; } = new();
     public GoogleCalendarConfig Calendar { get; init; } = new();
@@ -75,6 +77,24 @@ public sealed class ClassifierConfig
     /// La corbeille Gmail est recuperable 30 jours.
     /// </summary>
     public string[] BlockedSenders { get; init; } = [];
+}
+
+public sealed class LlmConfig
+{
+    /// <summary>
+    /// Fournisseur du modele : "claude" (API Anthropic, cloud, payant) ou "ollama"
+    /// (modele local via Ollama, gratuit, sans cle API). Voir ILlmClient.
+    /// </summary>
+    public string Provider { get; init; } = "claude";
+}
+
+public sealed class OllamaConfig
+{
+    /// <summary>URL du serveur Ollama (en general local a la machine : pas d'authentification).</summary>
+    public string BaseUrl { get; init; } = "http://localhost:11434";
+
+    /// <summary>Modele a utiliser (doit avoir ete installe via "ollama pull &lt;model&gt;").</summary>
+    public string Model { get; init; } = "qwen2.5:7b";
 }
 
 public sealed class ClaudeConfig

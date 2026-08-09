@@ -1,12 +1,12 @@
 # MailAgent
 
-Agent .NET 8 qui lit une boite Gmail (IMAP), **trie** les mails via **Claude**
-(modele Haiku), **notifie sur Telegram** les mails importants, **dialogue** avec toi
-(lecture, resume, reponse avec validation) et **ajoute a Google Agenda** les
-evenements dates qu'il detecte.
+Agent .NET 8 qui lit une boite Gmail (IMAP), **trie** les mails via un **LLM**
+(Claude Haiku par l'API Anthropic, ou un modele local via **Ollama**), **notifie sur
+Telegram** les mails importants, **dialogue** avec toi (lecture, resume, reponse avec
+validation) et **ajoute a Google Agenda** les evenements dates qu'il detecte.
 
 ```
-IMAP (Gmail) --> Claude (classification) --> +-- Telegram (notif si important)
+IMAP (Gmail) --> LLM (classification) -----> +-- Telegram (notif si important)
                                              +-- rangement par dossiers
                                              +-- Google Agenda (evenements dates)
 
@@ -43,6 +43,17 @@ GitHub Actions est ephemere, l'etat vit dans la boite). Marche sur tout serveur 
   et te previent. *Code present mais inactif tant que les secrets Google ne sont pas
   fournis (voir §2).*
 
+### Choix du LLM (`Llm:Provider`)
+
+- `"claude"` (defaut) : API Anthropic, modele `Claude:Model`. Necessite
+  `ANTHROPIC_API_KEY` et des credits.
+- `"ollama"` : modele local via [Ollama](https://ollama.com), **gratuit et sans cle
+  API** — pense pour un agent auto-heberge (VPS). Configure `Ollama:BaseUrl`
+  (defaut `http://localhost:11434`) et `Ollama:Model` (defaut `qwen2.5:7b`, a
+  installer avant : `ollama pull qwen2.5:7b`). Ne fonctionne pas sur GitHub Actions
+  (pas de serveur Ollama) : ce mode suppose que l'agent tourne sur la machine qui
+  heberge Ollama.
+
 ## 2. Secrets a fournir
 
 L'agent lit ces valeurs depuis les **variables d'environnement** (en local) ou les
@@ -52,7 +63,7 @@ L'agent lit ces valeurs depuis les **variables d'environnement** (en local) ou l
 |------------------------|------------------------------------------------------|
 | `IMAP_USER`            | ton adresse Gmail (sert aussi a l'envoi SMTP)        |
 | `IMAP_PASS`            | **mot de passe d'application** Gmail (16 car.)       |
-| `ANTHROPIC_API_KEY`    | cle API Anthropic (`sk-ant-...`)                     |
+| `ANTHROPIC_API_KEY`    | cle API Anthropic (`sk-ant-...`) — inutile si `Llm:Provider` = `ollama` |
 | `TELEGRAM_BOT_TOKEN`   | token du bot, fourni par @BotFather                  |
 | `TELEGRAM_CHAT_ID`     | identifiant de ton chat (destinataire des notifs)    |
 
@@ -111,7 +122,8 @@ MailAgent/
 ├── Models/                    EmailItem, Classification
 └── Services/
     ├── EmailReader            lecture IMAP (MailKit)
-    ├── EmailClassifier        classification via Claude
+    ├── ILlmClient             abstraction LLM (+ ClaudeLlmClient / OllamaLlmClient)
+    ├── EmailClassifier        classification via le LLM configure
     ├── EmailSender            envoi SMTP + brouillon en attente
     ├── INotifier              abstraction du canal de notif
     ├── TelegramNotifier       notifications Telegram

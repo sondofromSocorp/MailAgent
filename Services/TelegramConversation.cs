@@ -9,11 +9,11 @@ namespace MailAgent.Services;
 
 /// <summary>
 /// Bot Telegram conversationnel : lit les messages entrants (getUpdates), determine l'intention
-/// via Claude (chat / repondre a un mail / valider / annuler) et agit. Repondre a un mail passe
-/// TOUJOURS par une validation explicite. Sans etat local : l'offset Telegram est confirme cote
-/// serveur, et le brouillon en attente vit dans un dossier IMAP (cf. EmailSender).
+/// via le LLM configure (chat / repondre a un mail / valider / annuler) et agit. Repondre a un
+/// mail passe TOUJOURS par une validation explicite. Sans etat local : l'offset Telegram est
+/// confirme cote serveur, et le brouillon en attente vit dans un dossier IMAP (cf. EmailSender).
 /// </summary>
-public sealed class TelegramConversation(AgentConfig config, HttpClient http, EmailReader reader, EmailSender sender)
+public sealed class TelegramConversation(AgentConfig config, HttpClient http, ILlmClient llm, EmailReader reader, EmailSender sender)
 {
     private const string RouterPrompt =
         """
@@ -165,32 +165,8 @@ public sealed class TelegramConversation(AgentConfig config, HttpClient http, Em
 
     private async Task<Route> RouteAsync(string userMessage, string context, CancellationToken ct)
     {
-        var payload = new
-        {
-            model = config.Claude.Model,
-            max_tokens = 1000,
-            system = RouterPrompt,
-            messages = new[]
-            {
-                new { role = "user", content = $"Mails recents (numerotes) :\n{context}\n\nMessage de l'utilisateur :\n{userMessage}" }
-            }
-        };
-
-        using var req = new HttpRequestMessage(HttpMethod.Post, config.Claude.ApiBaseUrl);
-        req.Headers.Add("x-api-key", config.AnthropicApiKey);
-        req.Headers.Add("anthropic-version", config.Claude.AnthropicVersion);
-        req.Content = JsonContent.Create(payload);
-
-        using var resp = await http.SendAsync(req, ct);
-        if (!resp.IsSuccessStatusCode)
-        {
-            var detail = await resp.Content.ReadAsStringAsync(ct);
-            throw new InvalidOperationException($"Claude a refuse la requete (HTTP {(int)resp.StatusCode}) : {detail}");
-        }
-
-        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-        var raw = doc.RootElement.GetProperty("content")[0].GetProperty("text").GetString() ?? "{}";
-        raw = ExtractJson(raw);
+        var userContent = $"Mails recents (numerotes) :\n{context}\n\nMessage de l'utilisateur :\n{userMessage}";
+        var raw = ExtractJson(await llm.CompleteAsync(RouterPrompt, userContent, maxTokens: 1000, ct));
 
         try
         {
