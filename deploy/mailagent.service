@@ -8,5 +8,7 @@ Type=oneshot
 WorkingDirectory=/opt/mailagent/publish
 EnvironmentFile=/etc/mailagent.env
 ExecStart=/usr/bin/dotnet /opt/mailagent/publish/MailAgent.dll
-# Une passe peut encha^ner plusieurs fournees (MaxRunSeconds=480) + latence du LLM local.
-TimeoutStartSec=900
+# Une passe = fournees enchainees jusqu'au budget MaxRunSeconds (480s) + la fournee en cours,
+# soit jusqu'a ~35 min avec un LLM local lent (50 mails x 300s max par appel). Tuer la passe
+# avant la fin re-notifierait sur Telegram les mails deja traites (marquage en fin de passe).
+TimeoutStartSec=3600
