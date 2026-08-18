@@ -13,6 +13,12 @@ concurrency:
   group: mailagent
   cancel-in-progress: false
 
+# models: read permet au GITHUB_TOKEN automatique d'appeler GitHub Models (GPT gratuits,
+# quota journalier) : premier maillon de la cascade LLM gratuite, sans aucune cle a creer.
+permissions:
+  contents: read
+  models: read
+
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -31,6 +37,12 @@ jobs:
           IMAP_USER: ${{ secrets.IMAP_USER }}
           IMAP_PASS: ${{ secrets.IMAP_PASS }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Cascade LLM gratuite (Llm:Provider=free) : github -> groq -> gemini.
+          # GitHub Models marche d'office via le token du job ; Groq et Gemini sont sautes
+          # tant que leur cle n'existe pas dans les secrets du repo.
+          GITHUB_MODELS_TOKEN: ${{ github.token }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Notification via bot Telegram (cf. README pour creer le bot et recuperer le chat id)
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

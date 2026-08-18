@@ -24,6 +24,10 @@ config.Telegram.ChatId = configuration["TELEGRAM_CHAT_ID"] ?? config.Telegram.Ch
 config.Calendar.ClientId = configuration["GOOGLE_CLIENT_ID"] ?? config.Calendar.ClientId;
 config.Calendar.ClientSecret = configuration["GOOGLE_CLIENT_SECRET"] ?? config.Calendar.ClientSecret;
 config.Calendar.RefreshToken = configuration["GOOGLE_REFRESH_TOKEN"] ?? config.Calendar.RefreshToken;
+// Cles des fournisseurs gratuits (Provider=free) : chaque entree de la cascade declare sa
+// variable d'environnement (KeyEnv). Cle absente = fournisseur simplement saute.
+foreach (var p in config.Free.Providers)
+    p.ApiKey = configuration[p.KeyEnv] ?? "";
 
 Validate(config);
 
@@ -31,10 +35,17 @@ Validate(config);
 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 
 // Le LLM a son propre HttpClient : un modele local (Ollama sur petit VPS) peut mettre bien
-// plus de 60s a generer une reponse, la ou l'API Claude repond en quelques secondes.
-var useOllama = config.Llm.Provider.Trim().Equals("ollama", StringComparison.OrdinalIgnoreCase);
-using var llmHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(useOllama ? 300 : 60) };
-ILlmClient llm = useOllama ? new OllamaLlmClient(config, llmHttp) : new ClaudeLlmClient(config, llmHttp);
+// plus de 60s a generer une reponse, la ou les API cloud repondent en quelques secondes.
+var llmProvider = config.Llm.Provider.Trim().ToLowerInvariant();
+using var llmHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(llmProvider == "ollama" ? 300 : 60) };
+var freeChain = config.Free.Providers.Where(p => !string.IsNullOrWhiteSpace(p.ApiKey)).ToArray();
+ILlmClient llm = llmProvider switch
+{
+    "ollama" => new OllamaLlmClient(config, llmHttp),
+    "free" => new FallbackLlmClient(
+        [.. freeChain.Select(p => (p.Name, (ILlmClient)new OpenAiCompatLlmClient(p.Name, p.BaseUrl, p.ApiKey, p.Model, llmHttp)))]),
+    _ => new ClaudeLlmClient(config, llmHttp),
+};
 
 var reader = new EmailReader(config);
 var classifier = new EmailClassifier(config, llm);
@@ -46,8 +57,13 @@ var conversation = new TelegramConversation(config, http, llm, reader, sender);
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
-Console.WriteLine($"MailAgent demarre. Mode : {(config.Agent.RunOnce ? "une passe" : "boucle continue")}. "
-    + $"LLM : {(useOllama ? $"Ollama ({config.Ollama.Model} sur {config.Ollama.BaseUrl})" : $"Claude ({config.Claude.Model})")}.");
+var llmLabel = llmProvider switch
+{
+    "ollama" => $"Ollama ({config.Ollama.Model} sur {config.Ollama.BaseUrl})",
+    "free" => "cascade gratuite " + string.Join(" -> ", freeChain.Select(p => $"{p.Name}:{p.Model}")),
+    _ => $"Claude ({config.Claude.Model})",
+};
+Console.WriteLine($"MailAgent demarre. Mode : {(config.Agent.RunOnce ? "une passe" : "boucle continue")}. LLM : {llmLabel}.");
 
 var runClock = Stopwatch.StartNew();
 do
@@ -190,9 +206,11 @@ static async Task<int> RunOnceAsync(
         {
             // Erreur d'infrastructure LLM (credits/cle Claude, serveur Ollama down ou modele
             // absent) : on previent UNE fois et on arrete la passe. Les mails non traites
-            // seront repris a la prochaine execution.
+            // seront repris a la prochaine execution. Exception : quotas des tiers gratuits
+            // epuisses (Quota) -- ils se reinitialisent seuls, alerter toutes les 5 min serait
+            // du spam ; on attend en silence.
             Console.WriteLine($"  [LLM BLOQUE   ] {ex.Message}");
-            if (!dryRun)
+            if (!dryRun && !ex.Quota)
             {
                 try
                 {
@@ -200,7 +218,8 @@ static async Task<int> RunOnceAsync(
                         "⚠️ Tri des mails en pause : le modele a refuse la requete.\n"
                         + ex.Message
                         + "\nClaude : verifie les credits (console.anthropic.com) ou la cle. "
-                        + "Ollama : verifie que le serveur tourne et que le modele est installe.", ct);
+                        + "Ollama : verifie que le serveur tourne et que le modele est installe. "
+                        + "Cascade gratuite : verifie les cles (github/groq/gemini) et les noms de modeles.", ct);
                 }
                 catch (Exception nex) { Console.WriteLine($"    (alerte Telegram non envoyee : {nex.Message})"); }
             }
@@ -272,9 +291,15 @@ static void Validate(AgentConfig c)
     var missing = new List<string>();
     if (string.IsNullOrWhiteSpace(c.ImapUser)) missing.Add("IMAP_USER");
     if (string.IsNullOrWhiteSpace(c.ImapPassword)) missing.Add("IMAP_PASS");
-    // La cle Anthropic n'est requise que si le fournisseur LLM est Claude (Ollama = sans cle).
-    if (!c.Llm.Provider.Trim().Equals("ollama", StringComparison.OrdinalIgnoreCase)
-        && string.IsNullOrWhiteSpace(c.AnthropicApiKey)) missing.Add("ANTHROPIC_API_KEY");
+    // Cle(s) LLM selon le fournisseur : Ollama = aucune ; "free" = au moins une cle de la
+    // cascade (les fournisseurs sans cle sont sautes) ; sinon Claude = cle Anthropic.
+    var provider = c.Llm.Provider.Trim().ToLowerInvariant();
+    if (provider == "free")
+    {
+        if (!c.Free.Providers.Any(p => !string.IsNullOrWhiteSpace(p.ApiKey)))
+            missing.Add("au moins une cle de la cascade gratuite (GITHUB_MODELS_TOKEN, GROQ_API_KEY ou GEMINI_API_KEY)");
+    }
+    else if (provider != "ollama" && string.IsNullOrWhiteSpace(c.AnthropicApiKey)) missing.Add("ANTHROPIC_API_KEY");
     if (string.IsNullOrWhiteSpace(c.Telegram.BotToken)) missing.Add("TELEGRAM_BOT_TOKEN");
     if (string.IsNullOrWhiteSpace(c.Telegram.ChatId)) missing.Add("TELEGRAM_CHAT_ID");
 

@@ -53,6 +53,23 @@ GitHub Actions est ephemere, l'etat vit dans la boite). Marche sur tout serveur 
   installer avant : `ollama pull qwen2.5:7b`). Ne fonctionne pas sur GitHub Actions
   (pas de serveur Ollama) : ce mode suppose que l'agent tourne sur la machine qui
   heberge Ollama.
+- `"free"` (**actif par defaut**) : cascade de **tiers gratuits** parlant l'API OpenAI,
+  essayes dans l'ordre de `Free:Providers` avec bascule automatique quand un quota
+  gratuit est epuise (429) :
+  1. **GitHub Models** (`openai/gpt-4.1-mini`, ~150 req/jour) — sur GitHub Actions,
+     **aucune cle a creer** : le `GITHUB_TOKEN` du job suffit (permission `models: read`
+     dans le workflow). En local : un PAT classique avec le scope `models:read` dans
+     `GITHUB_MODELS_TOKEN`.
+  2. **Groq** (`llama-3.3-70b-versatile`) — cle gratuite sur `console.groq.com/keys`,
+     a mettre dans le secret `GROQ_API_KEY`.
+  3. **Gemini** (`gemini-2.5-flash`) — cle gratuite sur `aistudio.google.com/apikey`,
+     a mettre dans le secret `GEMINI_API_KEY`.
+
+  Un fournisseur sans cle est simplement **saute**. Le comportement de l'agent est
+  identique quel que soit le fournisseur : meme prompt, meme parsing (voir
+  `EmailClassifier`) — seul le transport change (`OpenAiCompatLlmClient` +
+  `FallbackLlmClient`). Quotas tous epuises = la passe s'arrete en silence (pas de
+  spam Telegram), les mails sont repris a la passe suivante.
 
 ## 2. Secrets a fournir
 
@@ -63,7 +80,9 @@ L'agent lit ces valeurs depuis les **variables d'environnement** (en local) ou l
 |------------------------|------------------------------------------------------|
 | `IMAP_USER`            | ton adresse Gmail (sert aussi a l'envoi SMTP)        |
 | `IMAP_PASS`            | **mot de passe d'application** Gmail (16 car.)       |
-| `ANTHROPIC_API_KEY`    | cle API Anthropic (`sk-ant-...`) — inutile si `Llm:Provider` = `ollama` |
+| `ANTHROPIC_API_KEY`    | cle API Anthropic (`sk-ant-...`) — requise seulement si `Llm:Provider` = `claude` |
+| `GROQ_API_KEY`         | (optionnel, mode `free`) cle Groq — 2e maillon de la cascade |
+| `GEMINI_API_KEY`       | (optionnel, mode `free`) cle Google AI Studio — 3e maillon |
 | `TELEGRAM_BOT_TOKEN`   | token du bot, fourni par @BotFather                  |
 | `TELEGRAM_CHAT_ID`     | identifiant de ton chat (destinataire des notifs)    |
 

@@ -169,7 +169,11 @@ public sealed class EmailClassifier(AgentConfig config, ILlmClient llm)
         return sb.ToString();
     }
 
-    private sealed record ClassificationDto(bool ActionRequired, string? Action, bool Priority, string? Folder, string? Source, string? Reason, string? Notif, EventDto? Event);
+    // "action_required" : PropertyNameCaseInsensitive ne gere PAS les underscores, sans cet
+    // attribut la cle n'est jamais lue (et action_required vaudrait toujours false).
+    private sealed record ClassificationDto(
+        [property: System.Text.Json.Serialization.JsonPropertyName("action_required")] bool ActionRequired,
+        string? Action, bool Priority, string? Folder, string? Source, string? Reason, string? Notif, EventDto? Event);
 
     private sealed record EventDto(string? Title, string? Start, string? End, string? Location);
 }

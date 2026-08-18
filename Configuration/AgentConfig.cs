@@ -10,6 +10,7 @@ public sealed class AgentConfig
     public LlmConfig Llm { get; init; } = new();
     public ClaudeConfig Claude { get; init; } = new();
     public OllamaConfig Ollama { get; init; } = new();
+    public FreeLlmConfig Free { get; init; } = new();
     public TelegramConfig Telegram { get; init; } = new();
     public SmtpConfig Smtp { get; init; } = new();
     public GoogleCalendarConfig Calendar { get; init; } = new();
@@ -82,10 +83,41 @@ public sealed class ClassifierConfig
 public sealed class LlmConfig
 {
     /// <summary>
-    /// Fournisseur du modele : "claude" (API Anthropic, cloud, payant) ou "ollama"
-    /// (modele local via Ollama, gratuit, sans cle API). Voir ILlmClient.
+    /// Fournisseur du modele : "claude" (API Anthropic, cloud, payant), "ollama" (modele local
+    /// via Ollama, gratuit, sans cle API) ou "free" (cascade de tiers gratuits : GitHub Models,
+    /// Groq, Gemini -- bascule automatique quand un quota est epuise). Voir ILlmClient.
     /// </summary>
     public string Provider { get; init; } = "claude";
+}
+
+/// <summary>Cascade de fournisseurs gratuits (Llm:Provider = "free"), essayes dans l'ordre.</summary>
+public sealed class FreeLlmConfig
+{
+    public FreeLlmProviderConfig[] Providers { get; init; } = [];
+}
+
+/// <summary>
+/// Un fournisseur gratuit parlant l'API "chat completions" d'OpenAI (GitHub Models, Groq,
+/// Gemini via son endpoint compatible...). Sans cle dans l'environnement (variable KeyEnv),
+/// le fournisseur est simplement saute : on peut declarer la cascade complete d'avance et
+/// creer les cles au fur et a mesure.
+/// </summary>
+public sealed class FreeLlmProviderConfig
+{
+    /// <summary>Nom court affiche dans les logs (ex. "github", "groq", "gemini").</summary>
+    public string Name { get; init; } = "";
+
+    /// <summary>Racine de l'API, SANS le /chat/completions final.</summary>
+    public string BaseUrl { get; init; } = "";
+
+    /// <summary>Identifiant du modele chez ce fournisseur.</summary>
+    public string Model { get; init; } = "";
+
+    /// <summary>Nom de la variable d'environnement contenant la cle API.</summary>
+    public string KeyEnv { get; init; } = "";
+
+    /// <summary>Cle API, injectee depuis l'environnement au demarrage (jamais dans appsettings.json).</summary>
+    public string ApiKey { get; set; } = "";
 }
 
 public sealed class OllamaConfig
