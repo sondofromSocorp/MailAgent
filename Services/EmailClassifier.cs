@@ -91,7 +91,9 @@ public sealed class EmailClassifier(AccountConfig account, ILlmClient llm)
         var userContent =
             $"De : {email.From}\nObjet : {email.Subject}\n\nContenu :\n{email.BodyPreview}";
 
-        var text = ExtractJson(await llm.CompleteAsync(_systemPrompt, userContent, maxTokens: 300, ct));
+        // 1000 tokens : les modeles "a reflexion" (gpt-oss, gemini flash) consomment le budget
+        // en raisonnement interne AVANT d'emettre le JSON ; 300 suffisait a Claude mais tronquait.
+        var text = ExtractJson(await llm.CompleteAsync(_systemPrompt, userContent, maxTokens: 1000, ct));
 
         try
         {
