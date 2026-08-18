@@ -96,6 +96,15 @@ surveiller plusieurs boites, **chacune avec ses propres criteres**, declare-les 
 - L'assistant conversationnel (reponses aux mails, desabonnements) reste lie a la
   **premiere** boite de la liste.
 
+### L'assistant Telegram
+
+En parlant au bot tu peux : poser une question / demander un resume (contexte : les 30
+derniers mails), demander **tes mails importants** (« quels mails dois-je traiter ? » —
+classe les non-repondus de la boite), **retrouver un mail** (« retrouve le mail de Mme X » —
+recherche expediteur/objet sur tout le compte, archives comprises), **repondre a un mail**
+(brouillon soumis a ta validation explicite), te **desabonner** d'une newsletter, et
+**purger la conversation** (« efface nos messages », limite Telegram : 48h).
+
 ### Desabonnement a la demande (Telegram)
 
 Dis au bot « desabonne-moi de X » : il retrouve le mail, lit son en-tete standard
