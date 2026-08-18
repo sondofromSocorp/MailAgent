@@ -71,6 +71,39 @@ GitHub Actions est ephemere, l'etat vit dans la boite). Marche sur tout serveur 
   `FallbackLlmClient`). Quotas tous epuises = la passe s'arrete en silence (pas de
   spam Telegram), les mails sont repris a la passe suivante.
 
+### Plusieurs boites mail (`Accounts`)
+
+Par defaut (liste `Accounts` vide), l'agent surveille la boite unique configuree par les
+sections globales `Imap`/`Classifier` et les secrets `IMAP_USER`/`IMAP_PASS`. Pour
+surveiller plusieurs boites, **chacune avec ses propres criteres**, declare-les :
+
+```json
+"Accounts": [
+  { "Name": "perso", "UserEnv": "IMAP_USER", "PassEnv": "IMAP_PASS",
+    "Classifier": { "PriorityTopics": [ "Nayeli" ] } },
+  { "Name": "pro", "UserEnv": "IMAP_USER_PRO", "PassEnv": "IMAP_PASS_PRO",
+    "Imap": { "Folders": [ "Clients", "Fournisseurs", "Pub" ], "MaxPerPass": 30 },
+    "Classifier": { "ExtraInstructions": "Boite professionnelle : tout mail d'un client est prioritaire." } }
+]
+```
+
+- Chaque boite a ses `Folders`, `PriorityTopics`/`PrioritySenders`, `BlockedSenders` et
+  des consignes libres `ExtraInstructions` injectees dans le prompt du modele. Les champs
+  omis prennent les valeurs standard (pas celles de la section globale).
+- Les secrets (`UserEnv`/`PassEnv`) sont a creer dans GitHub et a exposer dans
+  `agent.yml` (lignes d'exemple commentees). Une boite sans secrets est **sautee**.
+- En multi-boites, les notifications Telegram sont prefixees `[nom]`.
+- L'assistant conversationnel (reponses aux mails, desabonnements) reste lie a la
+  **premiere** boite de la liste.
+
+### Desabonnement a la demande (Telegram)
+
+Dis au bot « desabonne-moi de X » : il retrouve le mail, lit son en-tete standard
+`List-Unsubscribe` et effectue le desabonnement **one-click** (RFC 8058) ou envoie le
+mail de desinscription (`mailto:`). S'il n'y a qu'un lien web manuel, il te l'envoie.
+Jamais automatique sur simple classification : cliquer le lien d'un spam confirmerait
+que l'adresse est active.
+
 ## 2. Secrets a fournir
 
 L'agent lit ces valeurs depuis les **variables d'environnement** (en local) ou les

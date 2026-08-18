@@ -8,18 +8,19 @@ namespace MailAgent.Services;
 /// Envoie la notification via l'API Bot Telegram (sendMessage).
 /// Fiable et gratuit, sans expiration de session (contrairement au sandbox WhatsApp).
 /// </summary>
-public sealed class TelegramNotifier(AgentConfig config, HttpClient http) : INotifier
+public sealed class TelegramNotifier(AgentConfig config, HttpClient http, string prefix = "") : INotifier
 {
     public async Task NotifyAsync(EmailItem email, Classification classification, CancellationToken ct = default)
     {
         // Message en langage naturel redige par le modele ; repli sur un format simple si absent.
-        var text = classification.Notif.Length > 0
+        // En multi-boites, prefix = "[nom] " pour savoir de quelle boite vient le mail.
+        var text = prefix + (classification.Notif.Length > 0
             ? $"📩 {classification.Notif}"
             : $"📧 Mail important\n" +
               $"De : {email.From}\n" +
               $"Objet : {email.Subject}\n" +
               (classification.Action.Length > 0 ? $"➡️ A faire : {classification.Action}\n" : "") +
-              $"Raison : {classification.Reason}";
+              $"Raison : {classification.Reason}");
 
         await SendTextAsync(text, ct);
     }

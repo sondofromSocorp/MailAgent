@@ -11,4 +11,6 @@ public sealed record EmailItem(
     string From,
     string Subject,
     string BodyPreview,
-    DateTimeOffset Date);
+    DateTimeOffset Date,
+    string UnsubscribeHeader = "",      // valeur brute de List-Unsubscribe (RFC 2369), "" si absent
+    bool OneClickUnsubscribe = false);  // en-tete List-Unsubscribe-Post=One-Click present (RFC 8058)

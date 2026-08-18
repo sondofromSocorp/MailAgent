@@ -13,8 +13,10 @@ namespace MailAgent.Services;
 /// mail passe TOUJOURS par une validation explicite. Sans etat local : l'offset Telegram est
 /// confirme cote serveur, et le brouillon en attente vit dans un dossier IMAP (cf. EmailSender).
 /// </summary>
-public sealed class TelegramConversation(AgentConfig config, HttpClient http, ILlmClient llm, EmailReader reader, EmailSender sender)
+public sealed class TelegramConversation(AgentConfig config, AccountConfig account, HttpClient http, ILlmClient llm, EmailReader reader, EmailSender sender)
 {
+    private readonly UnsubscribeService _unsubscribe = new(account, sender, http);
+
     private const string RouterPrompt =
         """
         Tu es le routeur d'un assistant mail personnel accessible sur Telegram. A partir du message
@@ -29,6 +31,9 @@ public sealed class TelegramConversation(AgentConfig config, HttpClient http, IL
         - "send"   : l'utilisateur VALIDE l'envoi en attente (ex. "oui", "envoie", "valide",
                      "ok envoie", "c'est bon"). target=0, reply="", answer="".
         - "cancel" : l'utilisateur ANNULE (ex. "annule", "non laisse tomber"). target=0, reply="", answer="".
+        - "unsub"  : l'utilisateur veut se DESABONNER d'une newsletter / liste de diffusion
+                     (ex. "desabonne-moi de Carrefour", "je ne veux plus recevoir ces mails").
+                     target = le NUMERO du mail concerne dans la liste. reply="", answer="".
         - "chat"   : tout le reste (question, resume, demande d'info). answer = ta reponse en francais
                      (resume / reponse), en t'appuyant sur le contenu des mails. target=0, reply="".
 
@@ -82,6 +87,9 @@ public sealed class TelegramConversation(AgentConfig config, HttpClient http, IL
             case "reply":
                 await HandleReplyAsync(route, recent, ct);
                 break;
+            case "unsub":
+                await HandleUnsubscribeAsync(route, recent, ct);
+                break;
             default:
                 await SendTextAsync(route.Answer.Length > 0 ? route.Answer : "(pas de reponse)", ct);
                 Console.WriteLine("    -> reponse chat envoyee.");
@@ -119,6 +127,20 @@ public sealed class TelegramConversation(AgentConfig config, HttpClient http, IL
         Console.WriteLine($"    -> proposition de reponse stockee (a {toAddress}).");
     }
 
+    private async Task HandleUnsubscribeAsync(Route route, IReadOnlyList<EmailItem> recent, CancellationToken ct)
+    {
+        if (route.Target < 1 || route.Target > recent.Count)
+        {
+            await SendTextAsync("Je n'ai pas identifie le mail dont tu veux te desabonner (il n'est peut-etre pas dans les 15 derniers). Precise l'expediteur ?", ct);
+            return;
+        }
+
+        var email = recent[route.Target - 1];
+        var outcome = await _unsubscribe.TryUnsubscribeAsync(email, ct);
+        await SendTextAsync(outcome, ct);
+        Console.WriteLine($"    -> desabonnement \"{email.Subject}\" : {outcome}");
+    }
+
     private async Task HandleSendAsync(CancellationToken ct)
     {
         var pending = await sender.GetPendingAsync(ct);
@@ -140,7 +162,7 @@ public sealed class TelegramConversation(AgentConfig config, HttpClient http, IL
     {
         toAddress = null;
         var msg = new MimeMessage();
-        msg.From.Add(MailboxAddress.Parse(config.ImapUser));
+        msg.From.Add(MailboxAddress.Parse(account.User));
 
         foreach (var mb in InternetAddressList.Parse(original.From).Mailboxes)
         {

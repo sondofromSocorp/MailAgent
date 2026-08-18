@@ -6,11 +6,12 @@ using MailAgent.Models;
 
 namespace MailAgent.Services;
 
-/// <summary>Trie un email via le LLM configure (Claude ou Ollama, voir ILlmClient).</summary>
-public sealed class EmailClassifier(AgentConfig config, ILlmClient llm)
+/// <summary>Trie un email via le LLM configure (voir ILlmClient), selon les criteres de SA boite.</summary>
+public sealed class EmailClassifier(AccountConfig account, ILlmClient llm)
 {
-    // Prompt systeme = base + liste des priorites personnelles (Nayeli, etc.), figee a la construction.
-    private readonly string _systemPrompt = SystemPrompt + BuildPrioritySection(config);
+    // Prompt systeme = base + criteres de la boite (dossiers autorises, consignes libres,
+    // priorites personnelles), fige a la construction.
+    private readonly string _systemPrompt = SystemPrompt + BuildAccountSection(account) + BuildPrioritySection(account.Classifier);
 
     private const string SystemPrompt =
         """
@@ -149,11 +150,27 @@ public sealed class EmailClassifier(AgentConfig config, ILlmClient llm)
         return cleaned.Length > 40 ? cleaned[..40] : cleaned;
     }
 
-    /// <summary>Construit la section "priorites personnelles" du prompt a partir de la config.</summary>
-    private static string BuildPrioritySection(AgentConfig config)
+    /// <summary>
+    /// Section du prompt propre a la boite : dossiers de classement AUTORISES (la taxonomie de
+    /// base du prompt decrit les dossiers standard ; cette liste fait foi) et consignes libres.
+    /// </summary>
+    private static string BuildAccountSection(AccountConfig account)
     {
-        var topics = config.Classifier.PriorityTopics;
-        var senders = config.Classifier.PrioritySenders;
+        var sb = new StringBuilder();
+        sb.Append("\n\nPour CETTE boite, les valeurs folder AUTORISEES sont exactement : ")
+          .Append(string.Join(", ", account.Imap.Folders.Select(f => $"\"{f}\"")))
+          .Append(" ou \"\" (garder en boite). N'utilise jamais une autre valeur.");
+        if (!string.IsNullOrWhiteSpace(account.Classifier.ExtraInstructions))
+            sb.Append("\n\n--- Consignes specifiques a cette boite ---\n")
+              .Append(account.Classifier.ExtraInstructions.Trim());
+        return sb.ToString();
+    }
+
+    /// <summary>Construit la section "priorites personnelles" du prompt a partir des criteres de la boite.</summary>
+    private static string BuildPrioritySection(ClassifierConfig classifier)
+    {
+        var topics = classifier.PriorityTopics;
+        var senders = classifier.PrioritySenders;
         var hasTopics = topics is { Length: > 0 };
         var hasSenders = senders is { Length: > 0 };
 

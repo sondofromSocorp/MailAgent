@@ -47,12 +47,46 @@ ILlmClient llm = llmProvider switch
     _ => new ClaudeLlmClient(config, llmHttp),
 };
 
-var reader = new EmailReader(config);
-var classifier = new EmailClassifier(config, llm);
-INotifier notifier = new TelegramNotifier(config, http);
-var sender = new EmailSender(config);
+// --- Boites mail : liste "Accounts" (multi-boites, criteres propres) ou compte historique ---
+foreach (var a in config.Accounts)
+{
+    a.User = configuration[a.UserEnv] ?? "";
+    a.Password = configuration[a.PassEnv] ?? "";
+}
+AccountConfig[] accounts;
+if (config.Accounts.Length > 0)
+{
+    // Une boite declaree sans secrets est sautee (on peut preparer la config avant les cles).
+    foreach (var a in config.Accounts.Where(x => x.User.Length == 0 || x.Password.Length == 0))
+        Console.WriteLine($"[ATTENTION] Boite '{a.Name}' ignoree : secrets {a.UserEnv}/{a.PassEnv} absents.");
+    accounts = config.Accounts.Where(a => a.User.Length > 0 && a.Password.Length > 0).ToArray();
+    if (accounts.Length == 0)
+    {
+        Console.WriteLine("Aucune boite utilisable : tous les secrets IMAP declares sont absents.");
+        Environment.Exit(1);
+    }
+}
+else
+{
+    accounts = [new AccountConfig
+    {
+        Name = "", User = config.ImapUser, Password = config.ImapPassword,
+        Imap = config.Imap, Classifier = config.Classifier,
+    }];
+}
+
+// Un jeu de services par boite. Le prefixe [nom] sur les notifs n'apparait qu'en multi-boites.
+var boxes = accounts.Select(a => new Mailbox(
+    a,
+    new EmailReader(a),
+    new EmailClassifier(a, llm),
+    new TelegramNotifier(config, http, accounts.Length > 1 && a.Name.Length > 0 ? $"[{a.Name}] " : ""))).ToArray();
+
 var calendar = new GoogleCalendar(config, http);
-var conversation = new TelegramConversation(config, http, llm, reader, sender);
+// L'assistant conversationnel (lecture Telegram + reponses aux mails) reste lie a la boite
+// PRINCIPALE (la premiere) : c'est elle qui sert d'expediteur SMTP et de contexte.
+var sender = new EmailSender(config, accounts[0]);
+var conversation = new TelegramConversation(config, accounts[0], http, llm, boxes[0].Reader, sender);
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
@@ -63,15 +97,16 @@ var llmLabel = llmProvider switch
     "free" => "cascade gratuite " + string.Join(" -> ", freeChain.Select(p => $"{p.Name}:{p.Model}")),
     _ => $"Claude ({config.Claude.Model})",
 };
-Console.WriteLine($"MailAgent demarre. Mode : {(config.Agent.RunOnce ? "une passe" : "boucle continue")}. LLM : {llmLabel}.");
+Console.WriteLine($"MailAgent demarre. Mode : {(config.Agent.RunOnce ? "une passe" : "boucle continue")}. LLM : {llmLabel}. "
+    + $"Boite(s) : {string.Join(", ", accounts.Select(a => a.Name.Length > 0 ? a.Name : a.User))}.");
 
 var runClock = Stopwatch.StartNew();
 do
 {
-    var processed = 0;
+    var fullBatch = false;
     try
     {
-        processed = await RunOnceAsync(reader, classifier, notifier, conversation, calendar, config, cts.Token);
+        fullBatch = await RunOnceAsync(boxes, conversation, calendar, config, cts.Token);
     }
     catch (OperationCanceledException) { break; }
     catch (Exception ex)
@@ -81,11 +116,11 @@ do
 
     if (config.Agent.RunOnce)
     {
-        // Vide le backlog : tant qu'une fournee PLEINE a ete traitee (donc il reste probablement
-        // des mails) et que le budget temps n'est pas atteint, on enchaine une autre fournee.
+        // Vide le backlog : tant qu'une boite a rendu une fournee PLEINE (donc il reste
+        // probablement des mails) et que le budget temps n'est pas atteint, on enchaine.
         var budgetReached = config.Agent.MaxRunSeconds > 0
             && runClock.Elapsed.TotalSeconds >= config.Agent.MaxRunSeconds;
-        if (processed >= config.Imap.MaxPerPass && !budgetReached) continue;
+        if (fullBatch && !budgetReached) continue;
         break;
     }
 
@@ -98,33 +133,43 @@ while (!cts.IsCancellationRequested);
 Console.WriteLine("Agent arrete.");
 
 
-static async Task<int> RunOnceAsync(
-    EmailReader reader, EmailClassifier classifier, INotifier notifier,
-    TelegramConversation conversation, GoogleCalendar calendar, AgentConfig config, CancellationToken ct)
+// Traite toutes les boites, puis le volet conversationnel. Renvoie true si AU MOINS une boite
+// a rendu une fournee pleine (il reste probablement du backlog a vider).
+static async Task<bool> RunOnceAsync(
+    IReadOnlyList<Mailbox> boxes, TelegramConversation conversation, GoogleCalendar calendar,
+    AgentConfig config, CancellationToken ct)
 {
     var dryRun = config.Agent.DryRun;
-    Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Lecture des mails a traiter..."
-        + (dryRun ? "  [MODE TEST : aucune action]" : ""));
-    var emails = await reader.GetToProcessAsync(ct);
-    Console.WriteLine($"  {emails.Count} mail(s) a traiter.");
 
     // Heures silencieuses : pendant la plage de nuit, les notifications sont reportees.
     var quiet = IsQuietNow(config.Agent);
-    if (quiet) Console.WriteLine("  Heures silencieuses : notifications suspendues (rangement maintenu).");
+    if (quiet) Console.WriteLine("Heures silencieuses : notifications suspendues (rangement maintenu).");
 
-    var toKeep = new List<MailKit.UniqueId>(emails.Count);              // restent en boite (marquage anti-doublon)
-    var toMove = new Dictionary<string, List<MailKit.UniqueId>>();      // dossier -> mails a classer
-    var toTrash = new List<MailKit.UniqueId>();                         // expediteurs auto-supprimes -> corbeille
+    var fullBatch = false;
     var importantEmails = new List<MailAgent.Models.EmailItem>();       // contexte pour l'assistant Telegram
 
-    foreach (var email in emails)
+    foreach (var box in boxes)
     {
+        var (account, reader, classifier, notifier) = box;
+        var label = account.Name.Length > 0 ? $" [{account.Name}]" : "";
+        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}]{label} Lecture des mails a traiter..."
+            + (dryRun ? "  [MODE TEST : aucune action]" : ""));
+        var emails = await reader.GetToProcessAsync(ct);
+        Console.WriteLine($"  {emails.Count} mail(s) a traiter.");
+        fullBatch |= emails.Count >= account.Imap.MaxPerPass;
+
+        var toKeep = new List<MailKit.UniqueId>(emails.Count);          // restent en boite (marquage anti-doublon)
+        var toMove = new Dictionary<string, List<MailKit.UniqueId>>();  // dossier -> mails a classer
+        var toTrash = new List<MailKit.UniqueId>();                     // expediteurs auto-supprimes -> corbeille
+
+        foreach (var email in emails)
+        {
         // Un mail en erreur (API, IMAP) ne doit pas arreter toute la passe : on le
         // journalise et on continue. N'etant ni marque ni deplace, il sera retente plus tard.
         try
         {
             // Expediteurs auto-supprimes : direct corbeille, sans analyse ni notification.
-            if (IsBlocked(email.From, config.Classifier.BlockedSenders))
+            if (IsBlocked(email.From, account.Classifier.BlockedSenders))
             {
                 Console.WriteLine($"  [CORBEILLE    ] {(email.Seen ? "lu   " : "nonlu")} {email.Subject}  - expediteur auto-supprime");
                 if (!dryRun) toTrash.Add(email.Uid);
@@ -140,13 +185,13 @@ static async Task<int> RunOnceAsync(
             if (important) importantEmails.Add(email);
             var nature = important
                 ? ""
-                : Array.IndexOf(config.Imap.Folders, result.Folder) >= 0 ? result.Folder : "";
+                : Array.IndexOf(account.Imap.Folders, result.Folder) >= 0 ? result.Folder : "";
 
             // Sous-dossier par emetteur seulement pour certaines natures (ex. Factures/Bouygues),
             // afin de retrouver une facture par emetteur sans multiplier les dossiers ailleurs.
             var folder = nature.Length > 0
                 && result.Source.Length > 0
-                && Array.IndexOf(config.Imap.SubfolderBySource, nature) >= 0
+                && Array.IndexOf(account.Imap.SubfolderBySource, nature) >= 0
                     ? $"{nature}/{result.Source}"
                     : nature;
 
@@ -231,29 +276,32 @@ static async Task<int> RunOnceAsync(
         }
     }
 
+        if (dryRun) continue;
+
+        // Classe chaque mail dans son dossier, puis marque ceux gardes en boite (anti-doublon).
+        foreach (var (folder, uids) in toMove)
+        {
+            await reader.MoveToFolderAsync(uids, folder, ct);
+            Console.WriteLine($"  {uids.Count} mail(s) classe(s) dans '{folder}'.");
+        }
+        if (toTrash.Count > 0)
+        {
+            await reader.MoveToTrashAsync(toTrash, ct);
+            Console.WriteLine($"  {toTrash.Count} mail(s) mis a la corbeille (expediteurs auto-supprimes).");
+        }
+        await reader.MarkNotifiedAsync(toKeep, ct);
+    }
+
     if (dryRun)
     {
-        Console.WriteLine("Mode test : rien n'a ete modifie dans la boite.");
-        return emails.Count;
+        Console.WriteLine("Mode test : rien n'a ete modifie dans les boites.");
+        return fullBatch;
     }
 
-    // Classe chaque mail dans son dossier, puis marque ceux gardes en boite (anti-doublon).
-    foreach (var (folder, uids) in toMove)
-    {
-        await reader.MoveToFolderAsync(uids, folder, ct);
-        Console.WriteLine($"  {uids.Count} mail(s) classe(s) dans '{folder}'.");
-    }
-    if (toTrash.Count > 0)
-    {
-        await reader.MoveToTrashAsync(toTrash, ct);
-        Console.WriteLine($"  {toTrash.Count} mail(s) mis a la corbeille (expediteurs auto-supprimes).");
-    }
-    await reader.MarkNotifiedAsync(toKeep, ct);
-
-    // Volet conversationnel : lit les messages Telegram en attente et y repond.
+    // Volet conversationnel : lit les messages Telegram en attente et y repond (boite principale).
     await conversation.RunAsync(importantEmails, ct);
 
-    return emails.Count;
+    return fullBatch;
 }
 
 // Vrai si l'expediteur correspond a un fragment de la liste des expediteurs auto-supprimes.
@@ -289,8 +337,13 @@ static bool IsQuietNow(RuntimeConfig agent)
 static void Validate(AgentConfig c)
 {
     var missing = new List<string>();
-    if (string.IsNullOrWhiteSpace(c.ImapUser)) missing.Add("IMAP_USER");
-    if (string.IsNullOrWhiteSpace(c.ImapPassword)) missing.Add("IMAP_PASS");
+    // Compte historique unique : requis seulement si aucune boite n'est declaree dans "Accounts"
+    // (les boites declarees sont validees a la resolution : sans secrets, elles sont sautees).
+    if (c.Accounts.Length == 0)
+    {
+        if (string.IsNullOrWhiteSpace(c.ImapUser)) missing.Add("IMAP_USER");
+        if (string.IsNullOrWhiteSpace(c.ImapPassword)) missing.Add("IMAP_PASS");
+    }
     // Cle(s) LLM selon le fournisseur : Ollama = aucune ; "free" = au moins une cle de la
     // cascade (les fournisseurs sans cle sont sautes) ; sinon Claude = cle Anthropic.
     var provider = c.Llm.Provider.Trim().ToLowerInvariant();
@@ -310,3 +363,6 @@ static void Validate(AgentConfig c)
     Console.WriteLine("\nVoir le README pour le detail du parametrage.");
     Environment.Exit(1);
 }
+
+/// <summary>Jeu de services lie a une boite mail (comptes multiples, criteres propres).</summary>
+sealed record Mailbox(AccountConfig Account, EmailReader Reader, EmailClassifier Classifier, TelegramNotifier Notifier);

@@ -12,28 +12,28 @@ namespace MailAgent.Services;
 /// les mails deja traites portent un marqueur IMAP (keyword standard) et sont exclus
 /// de la recherche. Le mail n'est jamais marque comme lu cote serveur.
 /// </summary>
-public sealed class EmailReader(AgentConfig config)
+public sealed class EmailReader(AccountConfig account)
 {
     private const int BodyPreviewMaxChars = 2000;
 
     public async Task<IReadOnlyList<EmailItem>> GetToProcessAsync(CancellationToken ct = default)
     {
         using var client = new ImapClient();
-        await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
-        await client.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
 
         // Tous les mails (lus comme non lus) SANS le marqueur de suivi, limites aux MaxAgeDays
         // derniers jours. L'etat anti-doublon vit dans la boite (pas de state.json).
-        SearchQuery query = SearchQuery.NotKeyword(config.Imap.NotifiedKeyword);
-        if (config.Imap.MaxAgeDays > 0)
-            query = query.And(SearchQuery.DeliveredAfter(DateTime.Now.AddDays(-config.Imap.MaxAgeDays)));
+        SearchQuery query = SearchQuery.NotKeyword(account.Imap.NotifiedKeyword);
+        if (account.Imap.MaxAgeDays > 0)
+            query = query.And(SearchQuery.DeliveredAfter(DateTime.Now.AddDays(-account.Imap.MaxAgeDays)));
         var uids = await inbox.SearchAsync(query, ct);
 
         // Les plus recents d'abord, plafonne le nombre traite par passe (cout / duree).
-        var selected = uids.Reverse().Take(config.Imap.MaxPerPass).ToList();
+        var selected = uids.Reverse().Take(account.Imap.MaxPerPass).ToList();
         if (selected.Count == 0)
         {
             await client.DisconnectAsync(true, ct);
@@ -65,7 +65,10 @@ public sealed class EmailReader(AgentConfig config)
                 From: msg.From.ToString(),
                 Subject: string.IsNullOrWhiteSpace(msg.Subject) ? "(sans objet)" : msg.Subject,
                 BodyPreview: body,
-                Date: msg.Date));
+                Date: msg.Date,
+                UnsubscribeHeader: msg.Headers["List-Unsubscribe"] ?? "",
+                OneClickUnsubscribe: (msg.Headers["List-Unsubscribe-Post"] ?? "")
+                    .Contains("One-Click", StringComparison.OrdinalIgnoreCase)));
         }
 
         await client.DisconnectAsync(true, ct);
@@ -79,8 +82,8 @@ public sealed class EmailReader(AgentConfig config)
     public async Task<IReadOnlyList<EmailItem>> GetInboxOverviewAsync(int maxAgeDays, int max, CancellationToken ct = default)
     {
         using var client = new ImapClient();
-        await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
-        await client.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
@@ -121,8 +124,8 @@ public sealed class EmailReader(AgentConfig config)
     public async Task<IReadOnlyList<EmailItem>> GetRecentInboxWithBodyAsync(int max, CancellationToken ct = default)
     {
         using var client = new ImapClient();
-        await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
-        await client.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
@@ -153,7 +156,10 @@ public sealed class EmailReader(AgentConfig config)
                 From: msg.From.ToString(),
                 Subject: string.IsNullOrWhiteSpace(msg.Subject) ? "(sans objet)" : msg.Subject,
                 BodyPreview: body,
-                Date: msg.Date));
+                Date: msg.Date,
+                UnsubscribeHeader: msg.Headers["List-Unsubscribe"] ?? "",
+                OneClickUnsubscribe: (msg.Headers["List-Unsubscribe-Post"] ?? "")
+                    .Contains("One-Click", StringComparison.OrdinalIgnoreCase)));
         }
 
         await client.DisconnectAsync(true, ct);
@@ -169,13 +175,13 @@ public sealed class EmailReader(AgentConfig config)
         if (uids.Count == 0) return;
 
         using var client = new ImapClient();
-        await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
-        await client.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
         await inbox.AddFlagsAsync(uids, MessageFlags.None,
-            new HashSet<string> { config.Imap.NotifiedKeyword }, silent: true, ct);
+            new HashSet<string> { account.Imap.NotifiedKeyword }, silent: true, ct);
 
         await client.DisconnectAsync(true, ct);
     }
@@ -191,8 +197,8 @@ public sealed class EmailReader(AgentConfig config)
         if (uids.Count == 0) return;
 
         using var client = new ImapClient();
-        await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
-        await client.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
@@ -202,7 +208,7 @@ public sealed class EmailReader(AgentConfig config)
 
         // Marque comme lu avant le deplacement (le flag est conserve dans le dossier cible),
         // pour faire baisser le compteur de non-lus sur les mails inutiles.
-        if (config.Imap.MarkMovedAsRead)
+        if (account.Imap.MarkMovedAsRead)
             await inbox.AddFlagsAsync(uids, MessageFlags.Seen, silent: true, ct);
 
         await inbox.MoveToAsync(uids, target, ct);
@@ -218,8 +224,8 @@ public sealed class EmailReader(AgentConfig config)
         if (uids.Count == 0) return;
 
         using var client = new ImapClient();
-        await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
-        await client.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);

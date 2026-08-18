@@ -13,14 +13,14 @@ namespace MailAgent.Services;
 /// pret a partir) vit dans un dossier IMAP dedie (pas de fichier d'etat, disque CI ephemere).
 /// Un seul brouillon en attente a la fois.
 /// </summary>
-public sealed class EmailSender(AgentConfig config)
+public sealed class EmailSender(AgentConfig config, AccountConfig account)
 {
     /// <summary>Envoie un message deja construit (To/Subject/References/corps) via SMTP.</summary>
     public async Task SendAsync(MimeMessage message, CancellationToken ct = default)
     {
         using var smtp = new SmtpClient();
         await smtp.ConnectAsync(config.Smtp.Host, config.Smtp.Port, SecureSocketOptions.StartTls, ct);
-        await smtp.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+        await smtp.AuthenticateAsync(account.User, account.Password, ct);
         await smtp.SendAsync(message, ct);
         await smtp.DisconnectAsync(true, ct);
     }
@@ -66,8 +66,8 @@ public sealed class EmailSender(AgentConfig config)
     private async Task<ImapClient> ConnectImapAsync(CancellationToken ct)
     {
         var client = new ImapClient();
-        await client.ConnectAsync(config.Imap.Host, config.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
-        await client.AuthenticateAsync(config.ImapUser, config.ImapPassword, ct);
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
         return client;
     }
 

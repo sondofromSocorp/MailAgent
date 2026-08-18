@@ -36,6 +36,10 @@ jobs:
         env:
           IMAP_USER: ${{ secrets.IMAP_USER }}
           IMAP_PASS: ${{ secrets.IMAP_PASS }}
+          # Boites supplementaires : declarer chaque boite dans "Accounts" (appsettings.json)
+          # avec ses UserEnv/PassEnv, creer les secrets, puis decommenter les lignes ici. Ex. :
+          # IMAP_USER_PRO: ${{ secrets.IMAP_USER_PRO }}
+          # IMAP_PASS_PRO: ${{ secrets.IMAP_PASS_PRO }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Cascade LLM gratuite (Llm:Provider=free) : github -> groq -> gemini.
           # GitHub Models marche d'office via le token du job ; Groq et Gemini sont sautes

@@ -6,6 +6,13 @@ namespace MailAgent.Configuration;
 /// </summary>
 public sealed class AgentConfig
 {
+    /// <summary>
+    /// Boites mail surveillees, chacune avec SES identifiants et SES criteres de tri.
+    /// Liste vide = compte historique unique construit depuis les sections globales
+    /// Imap/Classifier et les secrets IMAP_USER/IMAP_PASS.
+    /// </summary>
+    public AccountConfig[] Accounts { get; init; } = [];
+
     public ImapConfig Imap { get; init; } = new();
     public LlmConfig Llm { get; init; } = new();
     public ClaudeConfig Claude { get; init; } = new();
@@ -21,6 +28,34 @@ public sealed class AgentConfig
     public string ImapUser { get; set; } = "";
     public string ImapPassword { get; set; } = "";
     public string AnthropicApiKey { get; set; } = "";
+}
+
+/// <summary>
+/// Une boite mail surveillee : identifiants (via variables d'environnement dediees) + criteres
+/// de tri propres (dossiers, priorites, expediteurs bloques, consignes libres). Une boite
+/// declaree sans secrets est simplement sautee : on peut ajouter la config d'avance et creer
+/// les secrets plus tard.
+/// </summary>
+public sealed class AccountConfig
+{
+    /// <summary>Nom court affiche dans les logs et en prefixe des notifs (ex. "perso", "pro").</summary>
+    public string Name { get; init; } = "";
+
+    /// <summary>Variable d'environnement contenant l'adresse mail (ex. "IMAP_USER_PRO").</summary>
+    public string UserEnv { get; init; } = "";
+
+    /// <summary>Variable d'environnement contenant le mot de passe d'application.</summary>
+    public string PassEnv { get; init; } = "";
+
+    /// <summary>Serveur et criteres de classement de CETTE boite (valeurs standard par defaut).</summary>
+    public ImapConfig Imap { get; init; } = new();
+
+    /// <summary>Priorites / expediteurs bloques / consignes propres a CETTE boite.</summary>
+    public ClassifierConfig Classifier { get; init; } = new();
+
+    // --- Injectes depuis l'environnement au demarrage (jamais dans appsettings.json) ---
+    public string User { get; set; } = "";
+    public string Password { get; set; } = "";
 }
 
 public sealed class ImapConfig
@@ -78,6 +113,13 @@ public sealed class ClassifierConfig
     /// La corbeille Gmail est recuperable 30 jours.
     /// </summary>
     public string[] BlockedSenders { get; init; } = [];
+
+    /// <summary>
+    /// Consignes de tri LIBRES propres a la boite, ajoutees telles quelles au prompt du modele
+    /// (ex. "Boite professionnelle : tout mail d'un client est prioritaire."). Permet des
+    /// criteres differents par boite sans toucher au code.
+    /// </summary>
+    public string ExtraInstructions { get; init; } = "";
 }
 
 public sealed class LlmConfig
