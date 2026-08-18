@@ -167,6 +167,73 @@ public sealed class EmailReader(AccountConfig account)
     }
 
     /// <summary>
+    /// Mails de la boite de reception encore "a traiter" : non repondus, du plus recent au plus
+    /// ancien. Envelope + drapeaux seulement (pas de corps) : sert au classement d'importance
+    /// par le LLM, qui doit rester leger en tokens.
+    /// </summary>
+    public async Task<IReadOnlyList<EmailItem>> GetUnansweredInboxAsync(int max, CancellationToken ct = default)
+    {
+        using var client = new ImapClient();
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
+
+        var inbox = client.Inbox;
+        await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
+
+        var uids = await inbox.SearchAsync(SearchQuery.NotAnswered, ct);
+        var selected = uids.Reverse().Take(max).ToList();
+
+        var items = new List<EmailItem>(selected.Count);
+        if (selected.Count > 0)
+            foreach (var s in await inbox.FetchAsync(selected, MessageSummaryItems.Flags | MessageSummaryItems.Envelope, ct))
+                items.Add(SummaryToItem(s));
+
+        await client.DisconnectAsync(true, ct);
+        return items.OrderByDescending(i => i.Date).ToList();
+    }
+
+    /// <summary>
+    /// Recherche dans TOUT le compte ("Tous les messages" Gmail, donc aussi les archives) les
+    /// mails dont l'expediteur ou l'objet contient le terme. Du plus recent au plus ancien.
+    /// </summary>
+    public async Task<IReadOnlyList<EmailItem>> SearchAllMailAsync(string query, int max, CancellationToken ct = default)
+    {
+        using var client = new ImapClient();
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
+
+        var all = client.GetFolder(SpecialFolder.All) ?? client.Inbox;
+        await all.OpenAsync(FolderAccess.ReadOnly, ct);
+
+        var q = SearchQuery.FromContains(query).Or(SearchQuery.SubjectContains(query));
+        var uids = await all.SearchAsync(q, ct);
+        var selected = uids.Reverse().Take(max).ToList();
+
+        var items = new List<EmailItem>(selected.Count);
+        if (selected.Count > 0)
+            foreach (var s in await all.FetchAsync(selected, MessageSummaryItems.Flags | MessageSummaryItems.Envelope, ct))
+                items.Add(SummaryToItem(s));
+
+        await client.DisconnectAsync(true, ct);
+        return items.OrderByDescending(i => i.Date).ToList();
+    }
+
+    /// <summary>Convertit un resume IMAP (envelope + flags, sans corps) en EmailItem.</summary>
+    private static EmailItem SummaryToItem(IMessageSummary s)
+    {
+        var env = s.Envelope;
+        return new EmailItem(
+            Uid: s.UniqueId,
+            Seen: s.Flags?.HasFlag(MessageFlags.Seen) ?? false,
+            Answered: s.Flags?.HasFlag(MessageFlags.Answered) ?? false,
+            MessageId: env?.MessageId ?? s.UniqueId.ToString(),
+            From: env?.From?.ToString() ?? "",
+            Subject: string.IsNullOrWhiteSpace(env?.Subject) ? "(sans objet)" : env!.Subject,
+            BodyPreview: "",
+            Date: env?.Date ?? DateTimeOffset.MinValue);
+    }
+
+    /// <summary>
     /// Pose le marqueur de suivi (keyword IMAP) sur les mails traites.
     /// Ils seront exclus des prochaines passes. N'affecte ni le statut lu/non lu, ni le contenu.
     /// </summary>

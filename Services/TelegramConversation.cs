@@ -21,7 +21,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         """
         Tu es le routeur d'un assistant mail personnel accessible sur Telegram. A partir du message
         de l'utilisateur et de la liste NUMEROTEE de ses derniers mails, determine l'INTENTION et
-        reponds en JSON STRICT : {"intent":"...","target":N,"reply":"...","answer":"..."}
+        reponds en JSON STRICT : {"intent":"...","target":N,"query":"...","reply":"...","answer":"..."}
 
         intent vaut EXACTEMENT l'une de ces valeurs :
         - "reply"  : l'utilisateur veut REPONDRE a un mail (ex. "reponds au syndic que je serai present").
@@ -34,6 +34,15 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         - "unsub"  : l'utilisateur veut se DESABONNER d'une newsletter / liste de diffusion
                      (ex. "desabonne-moi de Carrefour", "je ne veux plus recevoir ces mails").
                      target = le NUMERO du mail concerne dans la liste. reply="", answer="".
+        - "important" : l'utilisateur demande ses mails les plus IMPORTANTS / a traiter
+                     (ex. "quels mails dois-je traiter ?", "mes 5 mails importants", "je dois faire quoi ?").
+                     target = le nombre demande (0 si non precise). query="", reply="", answer="".
+        - "search" : l'utilisateur veut RETROUVER des mails d'une personne ou sur un sujet
+                     (ex. "retrouve le mail de Mme Dupont", "les mails de la CAF").
+                     query = les termes de recherche (nom, adresse ou mots de l'objet, PAS de
+                     mots generiques comme "mail de"). target=0, reply="", answer="".
+        - "purge"  : l'utilisateur veut EFFACER les messages de cette conversation Telegram
+                     (ex. "efface nos messages", "nettoie la conversation"). target=0, query="", reply="", answer="".
         - "chat"   : tout le reste (question, resume, demande d'info). answer = ta reponse en francais
                      (resume / reponse), en t'appuyant sur le contenu des mails. target=0, reply="".
 
@@ -47,11 +56,13 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         var updates = await GetUpdatesAsync(ct);
         if (updates.Count == 0) return;
 
-        var recent = await reader.GetRecentInboxWithBodyAsync(max: 15, ct);
+        // 30 mails de contexte : assez pour "reponds a X" sans exploser le budget tokens des
+        // tiers gratuits (limite TPM Groq notamment).
+        var recent = await reader.GetRecentInboxWithBodyAsync(max: 30, ct);
         var context = BuildContext(recentImportant, recent);
 
         long maxUpdateId = 0;
-        foreach (var (updateId, chatId, text) in updates)
+        foreach (var (updateId, chatId, messageId, text) in updates)
         {
             maxUpdateId = Math.Max(maxUpdateId, updateId);
             if (chatId.ToString() != config.Telegram.ChatId || string.IsNullOrWhiteSpace(text)) continue;
@@ -59,7 +70,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
             Console.WriteLine($"  [TELEGRAM] recu : {text}");
             try
             {
-                await HandleAsync(text, context, recent, ct);
+                await HandleAsync(text, context, recent, messageId, ct);
             }
             catch (Exception ex)
             {
@@ -71,7 +82,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         await ConfirmUpdatesAsync(maxUpdateId + 1, ct);
     }
 
-    private async Task HandleAsync(string text, string context, IReadOnlyList<EmailItem> recent, CancellationToken ct)
+    private async Task HandleAsync(string text, string context, IReadOnlyList<EmailItem> recent, long messageId, CancellationToken ct)
     {
         var route = await RouteAsync(text, context, ct);
         switch (route.Intent)
@@ -90,11 +101,92 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
             case "unsub":
                 await HandleUnsubscribeAsync(route, recent, ct);
                 break;
+            case "important":
+                await HandleImportantAsync(route, ct);
+                break;
+            case "search":
+                await HandleSearchAsync(route, ct);
+                break;
+            case "purge":
+                await HandlePurgeAsync(messageId, ct);
+                break;
             default:
                 await SendTextAsync(route.Answer.Length > 0 ? route.Answer : "(pas de reponse)", ct);
                 Console.WriteLine("    -> reponse chat envoyee.");
                 break;
         }
+    }
+
+    /// <summary>
+    /// "Mes N mails importants" : classe les non-repondus de la boite (bien au-dela des 30 du
+    /// contexte) via le LLM et renvoie une liste priorisee avec quoi faire.
+    /// </summary>
+    private async Task HandleImportantAsync(Route route, CancellationToken ct)
+    {
+        var n = route.Target is > 0 and <= 20 ? route.Target : 5;
+        var candidates = await reader.GetUnansweredInboxAsync(max: 60, ct);
+        if (candidates.Count == 0)
+        {
+            await SendTextAsync("Rien a traiter : aucun mail non repondu en boite. 🎉", ct);
+            return;
+        }
+
+        var sb = new StringBuilder();
+        for (var i = 0; i < candidates.Count; i++)
+            sb.AppendLine($"{i + 1}. {candidates[i].Date:dd/MM} | {(candidates[i].Seen ? "lu" : "NON-LU")} | {candidates[i].From} | {candidates[i].Subject}");
+
+        var prompt =
+            $"""
+            Tu priorises la boite mail de l'utilisateur. Voici ses mails non repondus, du plus
+            recent au plus ancien. Choisis les {n} PLUS IMPORTANTS a traiter (actions attendues,
+            echeances, personnel/administratif avant marketing) et reponds en francais, en liste
+            numerotee courte : expediteur — objet — ce qu'il faut faire. Rien d'autre.
+            """;
+        var answer = await llm.CompleteAsync(prompt, sb.ToString(), maxTokens: 1000, ct);
+        await SendTextAsync(answer, ct);
+        Console.WriteLine($"    -> top {n} importants envoye ({candidates.Count} candidats).");
+    }
+
+    /// <summary>"Retrouve le mail de X" : recherche IMAP (expediteur/objet) sur tout le compte, archives comprises.</summary>
+    private async Task HandleSearchAsync(Route route, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(route.Query))
+        {
+            await SendTextAsync("Dis-moi qui ou quoi chercher (nom, adresse ou mots de l'objet).", ct);
+            return;
+        }
+
+        var found = await reader.SearchAllMailAsync(route.Query.Trim(), max: 10, ct);
+        if (found.Count == 0)
+        {
+            await SendTextAsync($"Aucun mail trouve pour « {route.Query} » (recherche sur l'expediteur et l'objet).", ct);
+            return;
+        }
+
+        var sb = new StringBuilder($"🔎 {found.Count} resultat(s) pour « {route.Query} » :\n");
+        foreach (var e in found)
+            sb.AppendLine($"\n• {e.Date:dd/MM/yyyy} — {e.From}\n  {e.Subject}");
+        await SendTextAsync(sb.ToString(), ct);
+        Console.WriteLine($"    -> recherche « {route.Query} » : {found.Count} resultat(s).");
+    }
+
+    /// <summary>
+    /// Efface les messages recents de la conversation. L'API Telegram n'expose pas l'historique :
+    /// on balaie les identifiants (sequentiels par chat) en dessous du message declencheur.
+    /// Limite Telegram : seuls les messages de moins de 48h sont supprimables.
+    /// </summary>
+    private async Task HandlePurgeAsync(long fromMessageId, CancellationToken ct)
+    {
+        var url = $"https://api.telegram.org/bot{config.Telegram.BotToken}/deleteMessage";
+        var deleted = 0;
+        for (var id = fromMessageId; id > Math.Max(0, fromMessageId - 200); id--)
+        {
+            var payload = new { chat_id = config.Telegram.ChatId, message_id = id };
+            using var resp = await http.PostAsJsonAsync(url, payload, ct);
+            if (resp.IsSuccessStatusCode) deleted++;
+        }
+        await SendTextAsync($"🧹 {deleted} message(s) efface(s). (Telegram ne permet d'effacer que les messages de moins de 48h.)", ct);
+        Console.WriteLine($"    -> purge : {deleted} message(s) efface(s).");
     }
 
     private async Task HandleReplyAsync(Route route, IReadOnlyList<EmailItem> recent, CancellationToken ct)
@@ -194,12 +286,12 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         {
             var dto = JsonSerializer.Deserialize<RouteDto>(raw, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             var intent = dto?.Intent?.Trim().ToLowerInvariant() ?? "chat";
-            return new Route(intent, dto?.Target ?? 0, dto?.Reply?.Trim() ?? "", dto?.Answer?.Trim() ?? "");
+            return new Route(intent, dto?.Target ?? 0, dto?.Query?.Trim() ?? "", dto?.Reply?.Trim() ?? "", dto?.Answer?.Trim() ?? "");
         }
         catch (JsonException)
         {
             // En cas de doute, on ne fait jamais d'action sensible : on retombe sur "chat".
-            return new Route("chat", 0, "", "Je n'ai pas bien compris, peux-tu reformuler ?");
+            return new Route("chat", 0, "", "", "Je n'ai pas bien compris, peux-tu reformuler ?");
         }
     }
 
@@ -230,21 +322,22 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         return sb.Length > 0 ? sb.ToString() : "(aucun mail recent en contexte)";
     }
 
-    private async Task<List<(long updateId, long chatId, string text)>> GetUpdatesAsync(CancellationToken ct)
+    private async Task<List<(long updateId, long chatId, long messageId, string text)>> GetUpdatesAsync(CancellationToken ct)
     {
         var url = $"https://api.telegram.org/bot{config.Telegram.BotToken}/getUpdates?timeout=0";
         using var resp = await http.GetAsync(url, ct);
         resp.EnsureSuccessStatusCode();
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-        var list = new List<(long, long, string)>();
+        var list = new List<(long, long, long, string)>();
         foreach (var u in doc.RootElement.GetProperty("result").EnumerateArray())
         {
             var updateId = u.GetProperty("update_id").GetInt64();
             if (!u.TryGetProperty("message", out var msg)) continue;
             var chatId = msg.GetProperty("chat").GetProperty("id").GetInt64();
+            var messageId = msg.TryGetProperty("message_id", out var mid) ? mid.GetInt64() : 0;
             var text = msg.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
-            list.Add((updateId, chatId, text));
+            list.Add((updateId, chatId, messageId, text));
         }
         return list;
     }
@@ -298,7 +391,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         return first >= 0 && last > first ? s[first..(last + 1)] : s;
     }
 
-    private sealed record Route(string Intent, int Target, string Reply, string Answer);
+    private sealed record Route(string Intent, int Target, string Query, string Reply, string Answer);
 
-    private sealed record RouteDto(string? Intent, int Target, string? Reply, string? Answer);
+    private sealed record RouteDto(string? Intent, int Target, string? Query, string? Reply, string? Answer);
 }
