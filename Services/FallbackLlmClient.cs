@@ -22,10 +22,14 @@ public sealed class FallbackLlmClient(IReadOnlyList<(string Label, ILlmClient Cl
             {
                 return await client.CompleteAsync(system, userContent, maxTokens, ct);
             }
-            catch (LlmException ex)
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
             {
+                // LlmException (quota, cle...) mais aussi tout crash inattendu d'un client
+                // (reponse inattendue, parsing) : un fournisseur defaillant ne doit jamais
+                // faire tomber la passe tant qu'il en reste un autre a essayer.
                 errors.Add(ex.Message);
-                allQuota &= ex.Quota;
+                allQuota &= (ex as LlmException)?.Quota ?? false;
                 current++;
                 if (current < providers.Count)
                     Console.WriteLine($"    [LLM] {label} indisponible ({ex.Message}) -> bascule vers {providers[current].Label}.");

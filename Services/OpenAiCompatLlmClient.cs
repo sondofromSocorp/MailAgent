@@ -111,7 +111,8 @@ public sealed class OpenAiCompatLlmClient(string label, string baseUrl, string a
     private static TimeSpan? ParseRetryDelay(HttpResponseMessage resp, string body)
     {
         if (resp.Headers.RetryAfter?.Delta is { } delta) return delta;
-        var m = System.Text.RegularExpressions.Regex.Match(body, @"try again in ([0-9.]+)s",
+        // "try again in 12.3s" (Groq) ou "Please retry in 20.2s" (Gemini).
+        var m = System.Text.RegularExpressions.Regex.Match(body, @"(?:retry|try again) in ([0-9.]+)s",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         return m.Success && double.TryParse(m.Groups[1].Value,
             System.Globalization.CultureInfo.InvariantCulture, out var s)
@@ -121,13 +122,21 @@ public sealed class OpenAiCompatLlmClient(string label, string baseUrl, string a
 
     private static string Truncate(string s) => s.Length > 300 ? s[..300] : s;
 
-    /// <summary>Extrait le message d'erreur lisible du corps JSON (champ error.message), sinon le brut tronque.</summary>
+    /// <summary>
+    /// Extrait le message d'erreur lisible du corps JSON (champ error.message), sinon le brut
+    /// tronque. Tolerant au corps ENVELOPPE dans un tableau (Gemini renvoie ses erreurs ainsi,
+    /// y compris avec un statut HTTP d'erreur) et aux formes inattendues : cette fonction est
+    /// sur le chemin d'erreur, elle ne doit JAMAIS lever a son tour.
+    /// </summary>
     private static string ExtractApiError(string body)
     {
         try
         {
             using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("error", out var err))
+            var root = doc.RootElement.ValueKind == JsonValueKind.Array && doc.RootElement.GetArrayLength() > 0
+                ? doc.RootElement[0]
+                : doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("error", out var err))
             {
                 if (err.ValueKind == JsonValueKind.Object && err.TryGetProperty("message", out var msg))
                     return msg.GetString() ?? body;
