@@ -22,7 +22,9 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 15 min : le budget interne (Agent:MaxRunSeconds=480) arrete les fournees a 8 min, mais une
+    # fournee entamee peut deborder (attentes 429 des tiers gratuits) -- 10 min coupait en plein vol.
+    timeout-minutes: 15
     steps:
       - name: Recuperer le code
         uses: actions/checkout@v4

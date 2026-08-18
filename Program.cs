@@ -148,6 +148,16 @@ static async Task<bool> RunOnceAsync(
     var fullBatch = false;
     var importantEmails = new List<MailAgent.Models.EmailItem>();       // contexte pour l'assistant Telegram
 
+    // Assistant conversationnel EN PREMIER : repondre a l'utilisateur prime sur le tri, et un
+    // arret de passe en cours de route (quota LLM epuise, timeout CI) ne doit pas l'en priver.
+    // Il repasse aussi en fin de passe pour les messages arrives pendant le tri.
+    if (!dryRun)
+    {
+        try { await conversation.RunAsync(importantEmails, ct); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { Console.WriteLine($"  [TELEGRAM] echec (non bloquant) : {ex.Message}"); }
+    }
+
     foreach (var box in boxes)
     {
         var (account, reader, classifier, notifier) = box;
