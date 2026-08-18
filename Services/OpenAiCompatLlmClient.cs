@@ -36,7 +36,22 @@ public sealed class OpenAiCompatLlmClient(string label, string baseUrl, string a
         }
 
         using var doc = JsonDocument.Parse(body);
-        return doc.RootElement
+        // L'endpoint compatible OpenAI de Gemini enveloppe parfois la reponse -- et surtout les
+        // ERREURS, quota 429 compris -- dans un tableau JSON renvoye avec HTTP 200. On deballe,
+        // et un champ "error" est traite comme une vraie erreur HTTP.
+        var root = doc.RootElement.ValueKind == JsonValueKind.Array && doc.RootElement.GetArrayLength() > 0
+            ? doc.RootElement[0]
+            : doc.RootElement;
+        if (root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
+        {
+            var code = error.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0;
+            var msg = error.TryGetProperty("message", out var m) ? m.GetString() ?? body : body;
+            throw new LlmException($"{label} {code} : {Truncate(msg)}",
+                fatal: code is 400 or 401 or 403 or 404,
+                quota: code == 429);
+        }
+
+        return root
             .GetProperty("choices")[0]
             .GetProperty("message")
             .GetProperty("content")
@@ -44,13 +59,13 @@ public sealed class OpenAiCompatLlmClient(string label, string baseUrl, string a
     }
 
     /// <summary>
-    /// Envoie la requete avec un retry court sur les pannes serveur (5xx) uniquement. Pas de
-    /// retry sur 429 : sur un tier gratuit c'est souvent le quota JOURNALIER, autant basculer
-    /// tout de suite sur le fournisseur suivant de la cascade.
+    /// Envoie la requete avec retry sur les pannes serveur (5xx) et sur les 429 de limite par
+    /// MINUTE (le fournisseur annonce alors un delai court : on attend et on retente). Un 429
+    /// sans delai court = quota JOURNALIER : on laisse remonter pour que la cascade bascule.
     /// </summary>
     private async Task<HttpResponseMessage> SendWithRetryAsync(object payload, CancellationToken ct)
     {
-        const int maxAttempts = 2;
+        const int maxAttempts = 3;
         for (var attempt = 1; ; attempt++)
         {
             using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl.TrimEnd('/')}/chat/completions");
@@ -68,15 +83,43 @@ public sealed class OpenAiCompatLlmClient(string label, string baseUrl, string a
                 throw new LlmException($"{label} injoignable : {ex.Message}", fatal: false);
             }
 
-            if (resp.IsSuccessStatusCode || attempt >= maxAttempts || (int)resp.StatusCode < 500)
+            if (resp.IsSuccessStatusCode || attempt >= maxAttempts)
                 return resp;
 
             var status = (int)resp.StatusCode;
+            if (status == 429)
+            {
+                var wait = ParseRetryDelay(resp, await resp.Content.ReadAsStringAsync(ct));
+                if (wait is null || wait > TimeSpan.FromSeconds(35)) return resp;
+                resp.Dispose();
+                Console.WriteLine($"    {label} 429 (limite par minute) : attente {wait.Value.TotalSeconds:0}s puis nouvel essai.");
+                await Task.Delay(wait.Value, ct);
+                continue;
+            }
+
+            if (status < 500) return resp;
             resp.Dispose();
             Console.WriteLine($"    {label} {status} : nouvelle tentative dans 500ms.");
             await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
         }
     }
+
+    /// <summary>
+    /// Delai de reattente annonce par un 429 : en-tete Retry-After, ou mention
+    /// "try again in 12.3s" dans le corps (format Groq). Null si aucun delai annonce.
+    /// </summary>
+    private static TimeSpan? ParseRetryDelay(HttpResponseMessage resp, string body)
+    {
+        if (resp.Headers.RetryAfter?.Delta is { } delta) return delta;
+        var m = System.Text.RegularExpressions.Regex.Match(body, @"try again in ([0-9.]+)s",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return m.Success && double.TryParse(m.Groups[1].Value,
+            System.Globalization.CultureInfo.InvariantCulture, out var s)
+            ? TimeSpan.FromSeconds(s + 1)
+            : null;
+    }
+
+    private static string Truncate(string s) => s.Length > 300 ? s[..300] : s;
 
     /// <summary>Extrait le message d'erreur lisible du corps JSON (champ error.message), sinon le brut tronque.</summary>
     private static string ExtractApiError(string body)
