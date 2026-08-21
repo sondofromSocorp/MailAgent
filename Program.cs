@@ -86,7 +86,10 @@ var calendar = new GoogleCalendar(config, http);
 // L'assistant conversationnel (lecture Telegram + reponses aux mails) reste lie a la boite
 // PRINCIPALE (la premiere) : c'est elle qui sert d'expediteur SMTP et de contexte.
 var sender = new EmailSender(config, accounts[0]);
-var conversation = new TelegramConversation(config, accounts[0], http, llm, boxes[0].Reader, sender);
+// Liste noire dynamique (« bloque X » sur Telegram), persistee en IMAP sur la boite
+// principale mais appliquee au tri de TOUTES les boites.
+var blocklist = new BlockListStore(accounts[0]);
+var conversation = new TelegramConversation(config, accounts[0], http, llm, boxes[0].Reader, sender, blocklist);
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
@@ -106,7 +109,7 @@ do
     var fullBatch = false;
     try
     {
-        fullBatch = await RunOnceAsync(boxes, conversation, calendar, config, cts.Token);
+        fullBatch = await RunOnceAsync(boxes, conversation, calendar, blocklist, config, cts.Token);
     }
     catch (OperationCanceledException) { break; }
     catch (Exception ex)
@@ -137,7 +140,7 @@ Console.WriteLine("Agent arrete.");
 // a rendu une fournee pleine (il reste probablement du backlog a vider).
 static async Task<bool> RunOnceAsync(
     IReadOnlyList<Mailbox> boxes, TelegramConversation conversation, GoogleCalendar calendar,
-    AgentConfig config, CancellationToken ct)
+    BlockListStore blocklist, AgentConfig config, CancellationToken ct)
 {
     var dryRun = config.Agent.DryRun;
 
@@ -158,6 +161,14 @@ static async Task<bool> RunOnceAsync(
         catch (Exception ex) { Console.WriteLine($"  [TELEGRAM] echec (non bloquant) : {ex.Message}"); }
     }
 
+    // Liste noire dynamique (ajoutee via Telegram), chargee APRES le volet conversationnel :
+    // un « bloque X » recu a l'instant s'applique des cette passe. Echec de lecture = liste
+    // vide (non bloquant), la config BlockedSenders reste appliquee.
+    IReadOnlyList<string> dynamicBlocked = [];
+    try { dynamicBlocked = await blocklist.GetAsync(ct); }
+    catch (OperationCanceledException) { throw; }
+    catch (Exception ex) { Console.WriteLine($"  [Blocklist] lecture impossible (non bloquant) : {ex.Message}"); }
+
     foreach (var box in boxes)
     {
         var (account, reader, classifier, notifier) = box;
@@ -171,6 +182,7 @@ static async Task<bool> RunOnceAsync(
         var toKeep = new List<MailKit.UniqueId>(emails.Count);          // restent en boite (marquage anti-doublon)
         var toMove = new Dictionary<string, List<MailKit.UniqueId>>();  // dossier -> mails a classer
         var toTrash = new List<MailKit.UniqueId>();                     // expediteurs auto-supprimes -> corbeille
+        LlmException? fatalLlm = null;                                  // LLM epuise : on flush l'etat AVANT de stopper
 
         foreach (var email in emails)
         {
@@ -178,8 +190,9 @@ static async Task<bool> RunOnceAsync(
         // journalise et on continue. N'etant ni marque ni deplace, il sera retente plus tard.
         try
         {
-            // Expediteurs auto-supprimes : direct corbeille, sans analyse ni notification.
-            if (IsBlocked(email.From, account.Classifier.BlockedSenders))
+            // Expediteurs auto-supprimes (config + liste dynamique Telegram) : direct
+            // corbeille, sans analyse ni notification.
+            if (IsBlocked(email.From, account.Classifier.BlockedSenders) || IsBlocked(email.From, dynamicBlocked))
             {
                 Console.WriteLine($"  [CORBEILLE    ] {(email.Seen ? "lu   " : "nonlu")} {email.Subject}  - expediteur auto-supprime");
                 if (!dryRun) toTrash.Add(email.Uid);
@@ -233,7 +246,11 @@ static async Task<bool> RunOnceAsync(
 
             // Evenement date detecte -> ajout a l'agenda + notification (si l'agenda est configure).
             // Le mail est ensuite marque/traite normalement : pas de re-creation aux passes suivantes.
-            if (result.Event is not null && calendar.IsConfigured)
+            // Garde-fou : jamais d'evenement dont la date est deja passee (vieux mail du backlog,
+            // ou mail citant une ancienne date), quoi qu'en dise le LLM.
+            if (result.Event is not null && IsPastEvent(result.Event))
+                Console.WriteLine($"      [Agenda] ignore (date passee) : {result.Event.Title} ({result.Event.Start})");
+            else if (result.Event is not null && calendar.IsConfigured)
             {
                 try
                 {
@@ -278,7 +295,11 @@ static async Task<bool> RunOnceAsync(
                 }
                 catch (Exception nex) { Console.WriteLine($"    (alerte Telegram non envoyee : {nex.Message})"); }
             }
-            throw; // stoppe la passe en cours : inutile de tenter les autres mails
+            // On NE relance PAS tout de suite : les mails deja traites (notifies, evenement
+            // agenda cree) doivent d'abord etre marques/classes, sinon ils seraient retraites
+            // a la passe suivante (doublons de notifs et d'evenements agenda).
+            fatalLlm = ex;
+            break;
         }
         catch (Exception ex)
         {
@@ -286,20 +307,25 @@ static async Task<bool> RunOnceAsync(
         }
     }
 
-        if (dryRun) continue;
+        if (!dryRun)
+        {
+            // Classe chaque mail dans son dossier, puis marque ceux gardes en boite (anti-doublon).
+            foreach (var (folder, uids) in toMove)
+            {
+                await reader.MoveToFolderAsync(uids, folder, ct);
+                Console.WriteLine($"  {uids.Count} mail(s) classe(s) dans '{folder}'.");
+            }
+            if (toTrash.Count > 0)
+            {
+                await reader.MoveToTrashAsync(toTrash, ct);
+                Console.WriteLine($"  {toTrash.Count} mail(s) mis a la corbeille (expediteurs auto-supprimes).");
+            }
+            await reader.MarkNotifiedAsync(toKeep, ct);
+        }
 
-        // Classe chaque mail dans son dossier, puis marque ceux gardes en boite (anti-doublon).
-        foreach (var (folder, uids) in toMove)
-        {
-            await reader.MoveToFolderAsync(uids, folder, ct);
-            Console.WriteLine($"  {uids.Count} mail(s) classe(s) dans '{folder}'.");
-        }
-        if (toTrash.Count > 0)
-        {
-            await reader.MoveToTrashAsync(toTrash, ct);
-            Console.WriteLine($"  {toTrash.Count} mail(s) mis a la corbeille (expediteurs auto-supprimes).");
-        }
-        await reader.MarkNotifiedAsync(toKeep, ct);
+        // L'etat est sauvegarde : on peut maintenant stopper la passe. Les mails traites avant
+        // la panne LLM ne seront pas retraites ; les autres seront repris plus tard.
+        if (fatalLlm is not null) throw fatalLlm;
     }
 
     if (dryRun)
@@ -314,10 +340,20 @@ static async Task<bool> RunOnceAsync(
     return fullBatch;
 }
 
-// Vrai si l'expediteur correspond a un fragment de la liste des expediteurs auto-supprimes.
-static bool IsBlocked(string from, string[] blocked)
+// Vrai si l'evenement commence avant aujourd'hui. Date illisible = pas "passe" : on laisse
+// la creation suivre son cours plutot que de jeter un evenement potentiellement valide.
+static bool IsPastEvent(MailAgent.Models.EventInfo evt)
 {
-    if (blocked is null || blocked.Length == 0 || string.IsNullOrEmpty(from)) return false;
+    var s = evt.Start.Trim();
+    var datePart = s.Contains('T') ? s[..s.IndexOf('T')] : s;
+    return DateOnly.TryParse(datePart, CultureInfo.InvariantCulture, out var d)
+        && d < DateOnly.FromDateTime(DateTime.Now);
+}
+
+// Vrai si l'expediteur correspond a un fragment de la liste des expediteurs auto-supprimes.
+static bool IsBlocked(string from, IReadOnlyList<string> blocked)
+{
+    if (blocked is null || blocked.Count == 0 || string.IsNullOrEmpty(from)) return false;
     foreach (var b in blocked)
         if (!string.IsNullOrWhiteSpace(b) && from.Contains(b, StringComparison.OrdinalIgnoreCase))
             return true;

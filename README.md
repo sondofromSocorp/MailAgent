@@ -102,7 +102,10 @@ En parlant au bot tu peux : poser une question / demander un resume (contexte : 
 derniers mails), demander **tes mails importants** (« quels mails dois-je traiter ? » —
 classe les non-repondus de la boite), **retrouver un mail** (« retrouve le mail de Mme X » —
 recherche expediteur/objet sur tout le compte, archives comprises), **repondre a un mail**
-(brouillon soumis a ta validation explicite), te **desabonner** d'une newsletter, et
+(brouillon soumis a ta validation explicite), te **desabonner** d'une newsletter,
+**bloquer un expediteur** (« bloque Temu », « ignore ces mails » — ses prochains mails
+partent directement a la corbeille ; « debloque X » et « qui est bloque ? » pour gerer
+la liste, persistee dans un dossier IMAP dedie donc conservee entre les passes), et
 **purger la conversation** (« efface nos messages », limite Telegram : 48h).
 
 ### Desabonnement a la demande (Telegram)

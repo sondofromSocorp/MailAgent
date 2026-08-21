@@ -13,7 +13,7 @@ namespace MailAgent.Services;
 /// mail passe TOUJOURS par une validation explicite. Sans etat local : l'offset Telegram est
 /// confirme cote serveur, et le brouillon en attente vit dans un dossier IMAP (cf. EmailSender).
 /// </summary>
-public sealed class TelegramConversation(AgentConfig config, AccountConfig account, HttpClient http, ILlmClient llm, EmailReader reader, EmailSender sender)
+public sealed class TelegramConversation(AgentConfig config, AccountConfig account, HttpClient http, ILlmClient llm, EmailReader reader, EmailSender sender, BlockListStore blocklist)
 {
     private readonly UnsubscribeService _unsubscribe = new(account, sender, http);
 
@@ -34,6 +34,17 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         - "unsub"  : l'utilisateur veut se DESABONNER d'une newsletter / liste de diffusion
                      (ex. "desabonne-moi de Carrefour", "je ne veux plus recevoir ces mails").
                      target = le NUMERO du mail concerne dans la liste. reply="", answer="".
+        - "block"  : l'utilisateur veut que l'agent BLOQUE / IGNORE un expediteur : ses mails
+                     partiront desormais directement a la corbeille, sans analyse ni notification
+                     (ex. "bloque Temu", "ignore les mails de X", "supprime automatiquement ces mails",
+                     "je ne veux plus voir ces mails"). target = le NUMERO du mail concerne si le
+                     message y fait reference, sinon 0. query = l'adresse, le domaine ou le nom de
+                     l'expediteur s'il est cite, sinon "". reply="", answer="".
+        - "unblock": l'utilisateur veut DEBLOQUER un expediteur precedemment bloque
+                     (ex. "debloque Temu", "ne bloque plus X"). query = l'expediteur.
+                     target=0, reply="", answer="".
+        - "blocklist" : l'utilisateur demande la liste des expediteurs bloques (ex. "qui est
+                     bloque ?", "montre la liste noire"). target=0, query="", reply="", answer="".
         - "important" : l'utilisateur demande ses mails les plus IMPORTANTS / a traiter
                      (ex. "quels mails dois-je traiter ?", "mes 5 mails importants", "je dois faire quoi ?").
                      target = le nombre demande (0 si non precise). query="", reply="", answer="".
@@ -100,6 +111,15 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                 break;
             case "unsub":
                 await HandleUnsubscribeAsync(route, recent, ct);
+                break;
+            case "block":
+                await HandleBlockAsync(route, recent, ct);
+                break;
+            case "unblock":
+                await HandleUnblockAsync(route, ct);
+                break;
+            case "blocklist":
+                await HandleBlocklistAsync(ct);
                 break;
             case "important":
                 await HandleImportantAsync(route, ct);
@@ -217,6 +237,94 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
             $"✉️ Proposition de reponse a {toAddress}\nObjet : {msg.Subject}\n\n{route.Reply}\n\n" +
             $"Reponds OUI pour envoyer, ou dis-moi quoi changer.{noReplyWarn}", ct);
         Console.WriteLine($"    -> proposition de reponse stockee (a {toAddress}).");
+    }
+
+    /// <summary>
+    /// « Bloque X » : ajoute l'expediteur a la liste noire persistee en IMAP (BlockListStore).
+    /// Des la prochaine passe de tri, ses mails partent directement a la corbeille, sans
+    /// analyse ni notification. Si le message designe un mail de la liste, on bloque
+    /// l'ADRESSE exacte de son expediteur (plus sur qu'un nom approximatif).
+    /// </summary>
+    private async Task HandleBlockAsync(Route route, IReadOnlyList<EmailItem> recent, CancellationToken ct)
+    {
+        var fragment = route.Target >= 1 && route.Target <= recent.Count
+            ? SenderAddress(recent[route.Target - 1].From)
+            : route.Query.Trim();
+
+        if (fragment.Length < 3)
+        {
+            await SendTextAsync("Dis-moi qui bloquer (adresse, domaine ou nom d'expediteur).", ct);
+            return;
+        }
+
+        var list = await blocklist.AddAsync(fragment, ct);
+        await SendTextAsync(
+            $"🚫 « {fragment} » est bloque : ses prochains mails iront directement a la corbeille, "
+            + $"sans notification (corbeille recuperable 30 jours).\nDis « debloque {fragment} » pour annuler.\n\n"
+            + FormatBlocklist(account.Classifier.BlockedSenders, list), ct);
+        Console.WriteLine($"    -> expediteur bloque : {fragment}");
+    }
+
+    /// <summary>« Debloque X » : retire l'expediteur de la liste noire persistee (pas de la config).</summary>
+    private async Task HandleUnblockAsync(Route route, CancellationToken ct)
+    {
+        var fragment = route.Query.Trim();
+        if (fragment.Length == 0)
+        {
+            await SendTextAsync("Dis-moi qui debloquer (adresse ou domaine).", ct);
+            return;
+        }
+
+        var (removed, list) = await blocklist.RemoveAsync(fragment, ct);
+        if (removed)
+        {
+            await SendTextAsync($"✅ « {fragment} » n'est plus bloque.\n\n"
+                + FormatBlocklist(account.Classifier.BlockedSenders, list), ct);
+            Console.WriteLine($"    -> expediteur debloque : {fragment}");
+        }
+        else if (account.Classifier.BlockedSenders.Any(b =>
+                     b.Contains(fragment, StringComparison.OrdinalIgnoreCase)
+                     || fragment.Contains(b, StringComparison.OrdinalIgnoreCase)))
+        {
+            await SendTextAsync(
+                $"« {fragment} » est bloque par la CONFIGURATION (BlockedSenders dans appsettings.json) : "
+                + "je ne peux pas le retirer d'ici, il faut editer le fichier.", ct);
+        }
+        else
+        {
+            await SendTextAsync($"« {fragment} » n'etait pas dans la liste des expediteurs bloques.", ct);
+        }
+    }
+
+    /// <summary>« Qui est bloque ? » : liste noire complete (Telegram + configuration).</summary>
+    private async Task HandleBlocklistAsync(CancellationToken ct)
+    {
+        var list = await blocklist.GetAsync(ct);
+        await SendTextAsync(FormatBlocklist(account.Classifier.BlockedSenders, list), ct);
+        Console.WriteLine($"    -> liste des bloques envoyee ({list.Count} via Telegram).");
+    }
+
+    private static string FormatBlocklist(string[] fromConfig, IReadOnlyList<string> fromTelegram)
+    {
+        if (fromConfig.Length == 0 && fromTelegram.Count == 0)
+            return "Aucun expediteur bloque pour le moment.";
+
+        var sb = new StringBuilder("Expediteurs bloques (direct corbeille) :");
+        foreach (var b in fromTelegram) sb.Append("\n• ").Append(b);
+        foreach (var b in fromConfig) sb.Append("\n• ").Append(b).Append("  (config)");
+        return sb.ToString();
+    }
+
+    /// <summary>Extrait l'adresse pure d'un champ From (« Nom &lt;a@b.c&gt; » -> « a@b.c »).</summary>
+    private static string SenderAddress(string from)
+    {
+        try
+        {
+            foreach (var mb in InternetAddressList.Parse(from).Mailboxes)
+                return mb.Address;
+        }
+        catch (ParseException) { }
+        return from.Trim();
     }
 
     private async Task HandleUnsubscribeAsync(Route route, IReadOnlyList<EmailItem> recent, CancellationToken ct)

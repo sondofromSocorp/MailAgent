@@ -75,6 +75,12 @@ public sealed class ImapConfig
     /// </summary>
     public string NotifiedKeyword { get; init; } = "MailAgentNotified";
 
+    /// <summary>
+    /// Dossier IMAP (boite principale) ou est persistee la liste des expediteurs bloques
+    /// depuis Telegram (« bloque X »). Voir BlockListStore.
+    /// </summary>
+    public string BlocklistFolder { get; init; } = "MailAgentBlocklist";
+
     /// <summary>Dossiers (natures) de classement autorises (le modele choisit parmi eux ; sinon le mail reste en boite).</summary>
     public string[] Folders { get; init; } =
         ["Factures", "Banque", "Immobilier", "ReseauxSociaux", "Pub", "Communication", "ASupprimer"];

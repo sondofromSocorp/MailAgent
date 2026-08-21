@@ -80,7 +80,9 @@ public sealed class EmailClassifier(AccountConfig account, ILlmClient llm)
            {"title": "intitule court", "start": "AAAA-MM-JJTHH:MM:SS", "end": "... ou ''", "location": "... ou ''"}.
            start au format ISO 8601 avec l'heure si elle est connue, sinon juste "AAAA-MM-JJ".
            N'INVENTE RIEN : uniquement si une date explicite figure dans le mail. Ne cree PAS
-           d'evenement pour une simple date marketing/promo ("offre jusqu'au ..."). Sinon : event = null.
+           d'evenement pour une simple date marketing/promo ("offre jusqu'au ..."), ni pour un
+           evenement dont la date est DEJA PASSEE par rapport a la date du jour fournie (vieux
+           mail, rappel d'un evenement termine). Sinon : event = null.
 
         Reponds UNIQUEMENT avec un objet JSON valide, sans aucun texte ni balise autour, au format exact :
         {"action_required": true|false, "action": "phrase ou ''", "priority": true|false, "folder": "Factures|Banque|Immobilier|ReseauxSociaux|Pub|Communication|ASupprimer|", "source": "Bouygues|...|", "reason": "phrase courte en francais", "notif": "message naturel ou ''", "event": {"title":"...","start":"...","end":"...","location":"..."} ou null}
@@ -88,8 +90,11 @@ public sealed class EmailClassifier(AccountConfig account, ILlmClient llm)
 
     public async Task<Classification> ClassifyAsync(EmailItem email, CancellationToken ct = default)
     {
+        // La date du jour et celle du mail sont indispensables au modele pour juger les
+        // echeances "deja passees" (action_required) et refuser les evenements passes (event).
         var userContent =
-            $"De : {email.From}\nObjet : {email.Subject}\n\nContenu :\n{email.BodyPreview}";
+            $"Nous sommes le {DateTime.Now:yyyy-MM-dd}. Mail recu le {email.Date:yyyy-MM-dd}.\n"
+            + $"De : {email.From}\nObjet : {email.Subject}\n\nContenu :\n{email.BodyPreview}";
 
         // 1000 tokens : les modeles "a reflexion" (gpt-oss, gemini flash) consomment le budget
         // en raisonnement interne AVANT d'emettre le JSON ; 300 suffisait a Claude mais tronquait.
