@@ -16,6 +16,7 @@ namespace MailAgent.Services;
 public sealed class TelegramConversation(AgentConfig config, AccountConfig account, HttpClient http, ILlmClient llm, EmailReader reader, EmailSender sender, BlockListStore blocklist)
 {
     private readonly UnsubscribeService _unsubscribe = new(account, sender, http);
+    private readonly AssistantToolLoop _tools = new(reader, llm);
 
     private const string RouterPrompt =
         """
@@ -131,7 +132,22 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                 await HandlePurgeAsync(messageId, ct);
                 break;
             default:
-                await SendTextAsync(route.Answer.Length > 0 ? route.Answer : "(pas de reponse)", ct);
+                // Hybride : les questions libres passent par la boucle d'outils (lecture seule),
+                // qui peut consulter la boite (recherche, lecture d'un mail complet, apercu)
+                // avant de repondre. La reponse directe du routeur sert de secours si la boucle
+                // echoue en cours de route (ex. quota LLM epuise).
+                string answer;
+                try
+                {
+                    answer = await _tools.AnswerAsync(text, context, recent, ct);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"    [Assistant] boucle d'outils en echec ({ex.Message}) : repli sur la reponse directe.");
+                    answer = route.Answer;
+                }
+                await SendTextAsync(answer.Length > 0 ? answer : "(pas de reponse)", ct);
                 Console.WriteLine("    -> reponse chat envoyee.");
                 break;
         }

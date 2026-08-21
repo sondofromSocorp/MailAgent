@@ -98,8 +98,15 @@ surveiller plusieurs boites, **chacune avec ses propres criteres**, declare-les 
 
 ### L'assistant Telegram
 
+Architecture **hybride** : les actions sensibles (repondre, envoyer, se desabonner,
+bloquer) passent par un **routeur d'intentions** — impossible qu'un mail parte par
+hallucination, l'envoi exige ta validation. Les **questions libres** passent par une
+**boucle d'outils en lecture seule** : le modele peut chercher dans tout le compte,
+lire un mail complet ou survoler la boite avant de repondre (4 outils max par question),
+mais ne peut rien modifier par ce canal.
+
 En parlant au bot tu peux : poser une question / demander un resume (contexte : les 30
-derniers mails), demander **tes mails importants** (« quels mails dois-je traiter ? » —
+derniers mails, enrichi a la demande par les outils ci-dessus), demander **tes mails importants** (« quels mails dois-je traiter ? » —
 classe les non-repondus de la boite), **retrouver un mail** (« retrouve le mail de Mme X » —
 recherche expediteur/objet sur tout le compte, archives comprises), **repondre a un mail**
 (brouillon soumis a ta validation explicite), te **desabonner** d'une newsletter,
@@ -191,7 +198,9 @@ MailAgent/
     ├── EmailSender            envoi SMTP + brouillon en attente
     ├── INotifier              abstraction du canal de notif
     ├── TelegramNotifier       notifications Telegram
-    ├── TelegramConversation   bot conversationnel (lire / resumer / repondre)
+    ├── TelegramConversation   bot conversationnel (routeur d'intentions + validation)
+    ├── AssistantToolLoop      boucle d'outils lecture seule pour les questions libres
+    ├── BlockListStore         liste noire dynamique (« bloque X »), persistee en IMAP
     └── GoogleCalendar         creation d'evenements (OAuth refresh token)
 ```
 

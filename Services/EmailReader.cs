@@ -218,6 +218,25 @@ public sealed class EmailReader(AccountConfig account)
         return items.OrderByDescending(i => i.Date).ToList();
     }
 
+    /// <summary>
+    /// Corps complet (tronque a maxChars) d'un mail de la boite, par UID. Sert a l'outil
+    /// "lire_mail" de l'assistant conversationnel (les apercus du contexte sont courts).
+    /// </summary>
+    public async Task<string> GetBodyAsync(UniqueId uid, int maxChars, CancellationToken ct = default)
+    {
+        using var client = new ImapClient();
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
+
+        var inbox = client.Inbox;
+        await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
+        var msg = await inbox.GetMessageAsync(uid, ct);
+        var body = msg.TextBody ?? msg.HtmlBody ?? "";
+        await client.DisconnectAsync(true, ct);
+
+        return body.Length > maxChars ? body[..maxChars] : body;
+    }
+
     /// <summary>Convertit un resume IMAP (envelope + flags, sans corps) en EmailItem.</summary>
     private static EmailItem SummaryToItem(IMessageSummary s)
     {
