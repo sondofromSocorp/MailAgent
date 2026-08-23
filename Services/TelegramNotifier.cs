@@ -12,10 +12,14 @@ public sealed class TelegramNotifier(AgentConfig config, HttpClient http, string
 {
     public async Task NotifyAsync(EmailItem email, Classification classification, CancellationToken ct = default)
     {
-        // Message en langage naturel redige par le modele ; repli sur un format simple si absent.
+        // Message en langage naturel redige par le modele ; repli sur un format simple si absent
+        // OU si le modele a mis du JSON/balisage a la place du texte (petits modeles locaux) :
+        // on n'envoie jamais un blob technique a l'utilisateur.
         // En multi-boites, prefix = "[nom] " pour savoir de quelle boite vient le mail.
-        var text = prefix + (classification.Notif.Length > 0
-            ? $"📩 {classification.Notif}"
+        var notif = classification.Notif.Trim();
+        if (notif.StartsWith('{') || notif.StartsWith('[') || notif.StartsWith('<')) notif = "";
+        var text = prefix + (notif.Length > 0
+            ? $"📩 {notif}"
             : $"📧 Mail important\n" +
               $"De : {email.From}\n" +
               $"Objet : {email.Subject}\n" +

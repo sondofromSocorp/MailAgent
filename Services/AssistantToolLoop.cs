@@ -87,7 +87,16 @@ public sealed class AssistantToolLoop(EmailReader reader, ILlmClient llm)
             }
 
             if (final is not null) return final;
-            if (tool is null) return raw;
+            if (tool is null)
+            {
+                // JSON valide mais ni "final" ni "tool" (les petits modeles inventent parfois
+                // leur propre schema) : on NE renvoie JAMAIS ce JSON brut a l'utilisateur.
+                // On corrige le tir dans le transcript et on redonne une chance au modele.
+                transcript.AppendLine(
+                    "Rappel : ta derniere reponse n'etait ni un appel d'outil ni {\"final\":\"...\"}. "
+                    + "Reponds STRICTEMENT dans l'un de ces deux formats.").AppendLine();
+                continue;
+            }
 
             var result = await ExecuteAsync(tool, args, recent, ct);
             if (result.Length > MaxToolResultChars) result = result[..MaxToolResultChars] + "\n(...tronque)";
