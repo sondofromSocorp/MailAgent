@@ -13,7 +13,7 @@ namespace MailAgent.Services;
 /// mail passe TOUJOURS par une validation explicite. Sans etat local : l'offset Telegram est
 /// confirme cote serveur, et le brouillon en attente vit dans un dossier IMAP (cf. EmailSender).
 /// </summary>
-public sealed class TelegramConversation(AgentConfig config, AccountConfig account, HttpClient http, ILlmClient llm, EmailReader reader, EmailSender sender, BlockListStore blocklist)
+public sealed class TelegramConversation(AgentConfig config, AccountConfig account, HttpClient http, ILlmClient llm, EmailReader reader, EmailSender sender, BlockListStore blocklist, GoogleCalendar calendar)
 {
     private readonly UnsubscribeService _unsubscribe = new(account, sender, http);
     private readonly AssistantToolLoop _tools = new(reader, llm);
@@ -22,7 +22,9 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         """
         Tu es le routeur d'un assistant mail personnel accessible sur Telegram. A partir du message
         de l'utilisateur et de la liste NUMEROTEE de ses derniers mails, determine l'INTENTION et
-        reponds en JSON STRICT : {"intent":"...","target":N,"query":"...","reply":"...","answer":"..."}
+        reponds en JSON STRICT :
+        {"intent":"...","target":N,"query":"...","reply":"...","answer":"...","start":"...","end":"..."}
+        (start/end ne servent qu'a l'intention "agenda" ; mets "" sinon.)
 
         intent vaut EXACTEMENT l'une de ces valeurs :
         - "reply"  : l'utilisateur veut REPONDRE a un mail (ex. "reponds au syndic que je serai present"),
@@ -49,6 +51,13 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                      target=0, reply="", answer="".
         - "blocklist" : l'utilisateur demande la liste des expediteurs bloques (ex. "qui est
                      bloque ?", "montre la liste noire"). target=0, query="", reply="", answer="".
+        - "agenda" : l'utilisateur veut AJOUTER un evenement ou un rappel a son agenda
+                     (ex. "ajoute un rappel : appeler Emma le 31 aout a 10h45", "mets l'AG du
+                     30 juin dans mon agenda"). query = l'intitule court de l'evenement
+                     (ex. "Appeler Emma Lourau"). start = la date/heure au format ISO 8601
+                     ("AAAA-MM-JJTHH:MM:SS", ou "AAAA-MM-JJ" si l'heure est inconnue), calculee
+                     par rapport a la date du jour fournie. end = fin ISO 8601 ou "" si inconnue.
+                     target=0, reply="", answer="".
         - "important" : l'utilisateur demande ses mails les plus IMPORTANTS / a traiter
                      (ex. "quels mails dois-je traiter ?", "mes 5 mails importants", "je dois faire quoi ?").
                      target = le nombre demande (0 si non precise). query="", reply="", answer="".
@@ -124,6 +133,9 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                 break;
             case "blocklist":
                 await HandleBlocklistAsync(ct);
+                break;
+            case "agenda":
+                await HandleAgendaAsync(route, ct);
                 break;
             case "important":
                 await HandleImportantAsync(route, ct);
@@ -315,6 +327,33 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         }
     }
 
+    /// <summary>
+    /// « Ajoute un rappel a mon agenda » : cree l'evenement dans le Google Agenda de
+    /// l'utilisateur (intitule + date extraits par le routeur). Necessite les secrets GOOGLE_*.
+    /// </summary>
+    private async Task HandleAgendaAsync(Route route, CancellationToken ct)
+    {
+        if (!calendar.IsConfigured)
+        {
+            await SendTextAsync(
+                "L'agenda Google n'est pas configure sur ce serveur : il manque les secrets "
+                + "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN.", ct);
+            return;
+        }
+        if (route.Query.Length == 0 || route.Start.Length == 0)
+        {
+            await SendTextAsync("Precise l'intitule et la date/heure du rappel (ex. « appeler Emma le 31 aout a 10h45 »).", ct);
+            return;
+        }
+
+        var evt = new EventInfo(route.Query, route.Start, route.End, "");
+        var link = await calendar.CreateEventAsync(evt, "Ajoute depuis Telegram a ta demande.", ct);
+        await SendTextAsync(link is null
+            ? $"❌ Je n'ai pas reussi a creer l'evenement « {route.Query} » ({route.Start})."
+            : $"📅 Ajoute a ton agenda : {route.Query} ({route.Start}).", ct);
+        Console.WriteLine($"    -> agenda : {(link is null ? "echec" : "evenement cree")} ({route.Query}, {route.Start}).");
+    }
+
     /// <summary>« Qui est bloque ? » : liste noire complete (Telegram + configuration).</summary>
     private async Task HandleBlocklistAsync(CancellationToken ct)
     {
@@ -406,19 +445,23 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
 
     private async Task<Route> RouteAsync(string userMessage, string context, CancellationToken ct)
     {
-        var userContent = $"Mails recents (numerotes) :\n{context}\n\nMessage de l'utilisateur :\n{userMessage}";
+        // La date du jour permet au routeur de resoudre les dates relatives ("demain",
+        // "le 31 aout") en ISO 8601 pour l'intention agenda.
+        var userContent = $"Nous sommes le {DateTime.Now:yyyy-MM-dd} ({DateTime.Now:dddd}).\n"
+            + $"Mails recents (numerotes) :\n{context}\n\nMessage de l'utilisateur :\n{userMessage}";
         var raw = ExtractJson(await llm.CompleteAsync(RouterPrompt, userContent, maxTokens: 1000, ct));
 
         try
         {
             var dto = JsonSerializer.Deserialize<RouteDto>(raw, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             var intent = dto?.Intent?.Trim().ToLowerInvariant() ?? "chat";
-            return new Route(intent, dto?.Target ?? 0, dto?.Query?.Trim() ?? "", dto?.Reply?.Trim() ?? "", dto?.Answer?.Trim() ?? "");
+            return new Route(intent, dto?.Target ?? 0, dto?.Query?.Trim() ?? "", dto?.Reply?.Trim() ?? "",
+                dto?.Answer?.Trim() ?? "", dto?.Start?.Trim() ?? "", dto?.End?.Trim() ?? "");
         }
         catch (JsonException)
         {
             // En cas de doute, on ne fait jamais d'action sensible : on retombe sur "chat".
-            return new Route("chat", 0, "", "", "Je n'ai pas bien compris, peux-tu reformuler ?");
+            return new Route("chat", 0, "", "", "Je n'ai pas bien compris, peux-tu reformuler ?", "", "");
         }
     }
 
@@ -518,7 +561,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         return first >= 0 && last > first ? s[first..(last + 1)] : s;
     }
 
-    private sealed record Route(string Intent, int Target, string Query, string Reply, string Answer);
+    private sealed record Route(string Intent, int Target, string Query, string Reply, string Answer, string Start, string End);
 
-    private sealed record RouteDto(string? Intent, int Target, string? Query, string? Reply, string? Answer);
+    private sealed record RouteDto(string? Intent, int Target, string? Query, string? Reply, string? Answer, string? Start, string? End);
 }

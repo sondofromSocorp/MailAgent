@@ -97,7 +97,7 @@ var sender = new EmailSender(config, accounts[0]);
 // Liste noire dynamique (« bloque X » sur Telegram), persistee en IMAP sur la boite
 // principale mais appliquee au tri de TOUTES les boites.
 var blocklist = new BlockListStore(accounts[0]);
-var conversation = new TelegramConversation(config, accounts[0], http, llm, boxes[0].Reader, sender, blocklist);
+var conversation = new TelegramConversation(config, accounts[0], http, llm, boxes[0].Reader, sender, blocklist, calendar);
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
