@@ -81,8 +81,16 @@ public sealed class AssistantToolLoop(EmailReader reader, ILlmClient llm)
             }
             catch (JsonException)
             {
-                // Pas du JSON : certains modeles repondent directement en texte. On prend la
-                // reponse telle quelle plutot que d'echouer.
+                // Illisible. Deux cas : du JSON malforme (ex. retours a la ligne non echappes
+                // dans la valeur -- vu avec qwen2.5:7b) -> meme traitement que le mauvais
+                // schema, on ne l'envoie JAMAIS a l'utilisateur ; ou du texte naturel -> c'est
+                // une vraie reponse, on la prend telle quelle.
+                if (raw.TrimStart().StartsWith('{'))
+                {
+                    Console.WriteLine($"    [Assistant] JSON malforme du modele, nouvelle tentative : {Snippet(raw)}");
+                    transcript.AppendLine(FormatReminder).AppendLine();
+                    continue;
+                }
                 return raw;
             }
 
@@ -92,9 +100,8 @@ public sealed class AssistantToolLoop(EmailReader reader, ILlmClient llm)
                 // JSON valide mais ni "final" ni "tool" (les petits modeles inventent parfois
                 // leur propre schema) : on NE renvoie JAMAIS ce JSON brut a l'utilisateur.
                 // On corrige le tir dans le transcript et on redonne une chance au modele.
-                transcript.AppendLine(
-                    "Rappel : ta derniere reponse n'etait ni un appel d'outil ni {\"final\":\"...\"}. "
-                    + "Reponds STRICTEMENT dans l'un de ces deux formats.").AppendLine();
+                Console.WriteLine($"    [Assistant] schema JSON inattendu du modele, nouvelle tentative : {Snippet(raw)}");
+                transcript.AppendLine(FormatReminder).AppendLine();
                 continue;
             }
 
@@ -106,6 +113,13 @@ public sealed class AssistantToolLoop(EmailReader reader, ILlmClient llm)
 
         return "Je n'ai pas reussi a conclure ma recherche, peux-tu reformuler ta question ?";
     }
+
+    private const string FormatReminder =
+        "Rappel : ta derniere reponse etait invalide (ni un appel d'outil, ni {\"final\":\"...\"} "
+        + "correct). Reponds STRICTEMENT {\"final\":\"ta reponse\"} en JSON VALIDE : les retours "
+        + "a la ligne dans la valeur doivent etre ecrits \\n, jamais de vrais sauts de ligne.";
+
+    private static string Snippet(string s) => s.Length > 100 ? s[..100].ReplaceLineEndings(" ") : s.ReplaceLineEndings(" ");
 
     /// <summary>Execute un outil. Toute erreur est renvoyee comme TEXTE au modele, qui peut se rattraper.</summary>
     private async Task<string> ExecuteAsync(string tool, JsonElement args, IReadOnlyList<EmailItem> recent, CancellationToken ct)

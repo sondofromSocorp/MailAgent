@@ -25,9 +25,12 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         reponds en JSON STRICT : {"intent":"...","target":N,"query":"...","reply":"...","answer":"..."}
 
         intent vaut EXACTEMENT l'une de ces valeurs :
-        - "reply"  : l'utilisateur veut REPONDRE a un mail (ex. "reponds au syndic que je serai present").
-                     target = le NUMERO du mail concerne dans la liste. reply = le texte COMPLET et poli
-                     de la reponse a envoyer en son nom (salutation, message, formule de politesse),
+        - "reply"  : l'utilisateur veut REPONDRE a un mail (ex. "reponds au syndic que je serai present"),
+                     MEME si sa demande combine autre chose (ex. "resume-moi le mail de X ET propose une
+                     reponse" -> reply). target = le NUMERO du mail concerne dans la liste. reply = le
+                     texte COMPLET et poli de la reponse a envoyer AU NOM DE L'UTILISATEUR (c'est LUI qui
+                     ecrit A l'expediteur du mail ; ne redige JAMAIS comme si tu etais l'expediteur, ne
+                     signe jamais du nom de l'expediteur), avec salutation et formule de politesse,
                      en francais. answer = "".
         - "send"   : l'utilisateur VALIDE l'envoi en attente (ex. "oui", "envoie", "valide",
                      "ok envoie", "c'est bon"). target=0, reply="", answer="".
