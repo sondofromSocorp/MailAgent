@@ -1,11 +1,12 @@
 name: MailAgent
 
 on:
-  # Toutes les 5 minutes (minimum autorise par GitHub ; heure UTC, best-effort = parfois decale).
-  # Repo public => minutes illimitees. Le 'concurrency' ci-dessous evite tout chevauchement.
-  schedule:
-    - cron: "*/5 * * * *"
-  # Bouton "Run workflow" pour lancer une passe a la demande (utile pour tester).
+  # CRON DESACTIVE (23/08/2026) : l'agent tourne desormais sur le VPS Oracle (timer systemd,
+  # voir deploy/). Deux agents en parallele se voleraient les messages Telegram et doubleraient
+  # les notifications. Pour reactiver le cron, decommenter les deux lignes ci-dessous.
+  # schedule:
+  #   - cron: "*/5 * * * *"
+  # Bouton "Run workflow" pour lancer une passe a la demande (utile pour tester / en secours).
   workflow_dispatch:
 
 # Empeche deux passes de tourner en meme temps.
