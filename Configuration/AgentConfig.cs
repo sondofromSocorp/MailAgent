@@ -142,6 +142,14 @@ public sealed class LlmConfig
 public sealed class FreeLlmConfig
 {
     public FreeLlmProviderConfig[] Providers { get; init; } = [];
+
+    /// <summary>
+    /// Ajoute Ollama (modele local, config Ollama) en DERNIER maillon de la cascade : les tiers
+    /// cloud gratuits d'abord (rapides, plus fins), le local en secours quand les quotas sont
+    /// epuises ou le reseau indisponible. A activer sur le VPS (Free__OllamaFallback=true) ;
+    /// laisser false ailleurs (pas de serveur Ollama sur GitHub Actions).
+    /// </summary>
+    public bool OllamaFallback { get; init; } = false;
 }
 
 /// <summary>

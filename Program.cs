@@ -38,12 +38,20 @@ using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 // plus de 60s a generer une reponse, la ou les API cloud repondent en quelques secondes.
 var llmProvider = config.Llm.Provider.Trim().ToLowerInvariant();
 using var llmHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(llmProvider == "ollama" ? 300 : 60) };
+// Client HTTP dedie au maillon Ollama de la cascade : une generation locale sur CPU peut
+// largement depasser les 60s accordes aux API cloud.
+using var ollamaHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(300) };
 var freeChain = config.Free.Providers.Where(p => !string.IsNullOrWhiteSpace(p.ApiKey)).ToArray();
+var freeLinks = new List<(string Label, ILlmClient Client)>(
+    freeChain.Select(p => (p.Name, (ILlmClient)new OpenAiCompatLlmClient(p.Name, p.BaseUrl, p.ApiKey, p.Model, llmHttp))));
+// Ollama en dernier recours (VPS) : le cloud gratuit d'abord (rapide, plus fin), le local
+// seulement quand rien d'autre ne repond -- il est lent sur CPU, on ne degrade qu'en secours.
+if (config.Free.OllamaFallback)
+    freeLinks.Add(("ollama-local", new OllamaLlmClient(config, ollamaHttp)));
 ILlmClient llm = llmProvider switch
 {
     "ollama" => new OllamaLlmClient(config, llmHttp),
-    "free" => new FallbackLlmClient(
-        [.. freeChain.Select(p => (p.Name, (ILlmClient)new OpenAiCompatLlmClient(p.Name, p.BaseUrl, p.ApiKey, p.Model, llmHttp)))]),
+    "free" => new FallbackLlmClient(freeLinks),
     _ => new ClaudeLlmClient(config, llmHttp),
 };
 
@@ -97,7 +105,8 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 var llmLabel = llmProvider switch
 {
     "ollama" => $"Ollama ({config.Ollama.Model} sur {config.Ollama.BaseUrl})",
-    "free" => "cascade gratuite " + string.Join(" -> ", freeChain.Select(p => $"{p.Name}:{p.Model}")),
+    "free" => "cascade gratuite " + string.Join(" -> ", freeChain.Select(p => $"{p.Name}:{p.Model}"))
+        + (config.Free.OllamaFallback ? $" -> ollama-local:{config.Ollama.Model} (secours)" : ""),
     _ => $"Claude ({config.Claude.Model})",
 };
 Console.WriteLine($"MailAgent demarre. Mode : {(config.Agent.RunOnce ? "une passe" : "boucle continue")}. LLM : {llmLabel}. "
