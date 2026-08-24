@@ -34,7 +34,7 @@ public sealed class EmailSender(AgentConfig config, AccountConfig account)
         try { folder = await root.GetSubfolderAsync(config.Smtp.PendingFolder, ct); }
         catch (FolderNotFoundException) { folder = await root.CreateAsync(config.Smtp.PendingFolder, isMessageFolder: true, ct); }
 
-        await ClearAsync(folder, ct);
+        await ClearAsync(client, folder, ct);
         await folder.AppendAsync(message, MessageFlags.Draft, ct);
         await client.DisconnectAsync(true, ct);
     }
@@ -59,7 +59,7 @@ public sealed class EmailSender(AgentConfig config, AccountConfig account)
     {
         using var client = await ConnectImapAsync(ct);
         var folder = await TryGetPendingAsync(client, ct);
-        if (folder is not null) await ClearAsync(folder, ct);
+        if (folder is not null) await ClearAsync(client, folder, ct);
         await client.DisconnectAsync(true, ct);
     }
 
@@ -78,12 +78,25 @@ public sealed class EmailSender(AgentConfig config, AccountConfig account)
         catch (FolderNotFoundException) { return null; }
     }
 
-    private static async Task ClearAsync(IMailFolder folder, CancellationToken ct)
+    /// <summary>
+    /// Vide le dossier des brouillons en attente en les deplacant vers la CORBEILLE.
+    /// Un simple expunge ne suffit pas : Gmail ARCHIVE le message expurge d'un libelle,
+    /// et le brouillon abandonne reste alors affiche dans le fil de conversation comme
+    /// s'il avait ete envoye (constate le 24/08 avec une reponse remplacee).
+    /// </summary>
+    private static async Task ClearAsync(ImapClient client, IMailFolder folder, CancellationToken ct)
     {
         await folder.OpenAsync(FolderAccess.ReadWrite, ct);
-        if (folder.Count > 0)
+        if (folder.Count == 0) return;
+
+        var all = await folder.SearchAsync(SearchQuery.All, ct);
+        var trash = client.GetFolder(SpecialFolder.Trash);
+        if (trash is not null)
         {
-            var all = await folder.SearchAsync(SearchQuery.All, ct);
+            await folder.MoveToAsync(all, trash, ct);
+        }
+        else
+        {
             await folder.AddFlagsAsync(all, MessageFlags.Deleted, silent: true, ct);
             await folder.ExpungeAsync(ct);
         }
