@@ -9,8 +9,8 @@ namespace MailAgent.Services;
 
 /// <summary>
 /// Bot Telegram conversationnel : lit les messages entrants (getUpdates), determine l'intention
-/// via le LLM configure (chat / repondre a un mail / valider / annuler) et agit. Repondre a un
-/// mail passe TOUJOURS par une validation explicite. Sans etat local : l'offset Telegram est
+/// via le LLM configure (chat / repondre a un mail / envoyer un nouveau mail / valider / annuler)
+/// et agit. Repondre a un mail ou en envoyer un nouveau passe TOUJOURS par une validation explicite. Sans etat local : l'offset Telegram est
 /// confirme cote serveur, et le brouillon en attente vit dans un dossier IMAP (cf. EmailSender).
 /// </summary>
 public sealed class TelegramConversation(AgentConfig config, AccountConfig account, HttpClient http, ILlmClient llm, EmailReader reader, EmailSender sender, BlockListStore blocklist, GoogleCalendar calendar)
@@ -23,8 +23,8 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         Tu es le routeur d'un assistant mail personnel accessible sur Telegram. A partir du message
         de l'utilisateur et de la liste NUMEROTEE de ses derniers mails, determine l'INTENTION et
         reponds en JSON STRICT :
-        {"intent":"...","target":N,"query":"...","reply":"...","answer":"...","start":"...","end":"..."}
-        (start/end ne servent qu'a l'intention "agenda" ; mets "" sinon.)
+        {"intent":"...","target":N,"query":"...","reply":"...","answer":"...","subject":"...","start":"...","end":"..."}
+        (start/end ne servent qu'a l'intention "agenda", subject qu'a "compose" ; mets "" sinon.)
 
         intent vaut EXACTEMENT l'une de ces valeurs :
         - "reply"  : l'utilisateur veut REPONDRE a un mail (ex. "reponds au syndic que je serai present"),
@@ -34,6 +34,13 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                      ecrit A l'expediteur du mail ; ne redige JAMAIS comme si tu etais l'expediteur, ne
                      signe jamais du nom de l'expediteur), avec salutation et formule de politesse,
                      en francais. answer = "".
+        - "compose": l'utilisateur veut ENVOYER un NOUVEAU mail (PAS une reponse a un mail recu)
+                     a un destinataire qu'il designe (ex. "envoie un mail a jean@exemple.fr pour lui
+                     dire que...", "ecris a Paul pour le remercier"). query = l'adresse email du
+                     destinataire si elle est donnee (recopie-la EXACTEMENT), sinon le nom cite.
+                     subject = un objet court et pertinent en francais. reply = le texte COMPLET et
+                     poli du mail, redige AU NOM DE L'UTILISATEUR, avec salutation et formule de
+                     politesse, en francais. target=0, answer="".
         - "send"   : l'utilisateur VALIDE l'envoi en attente (ex. "oui", "envoie", "valide",
                      "ok envoie", "c'est bon"). target=0, reply="", answer="".
         - "cancel" : l'utilisateur ANNULE (ex. "annule", "non laisse tomber"). target=0, reply="", answer="".
@@ -121,6 +128,9 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                 break;
             case "reply":
                 await HandleReplyAsync(route, recent, ct);
+                break;
+            case "compose":
+                await HandleComposeAsync(route, recent, ct);
                 break;
             case "unsub":
                 await HandleUnsubscribeAsync(route, recent, ct);
@@ -268,6 +278,64 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
             $"✉️ Proposition de reponse a {toAddress}\nObjet : {msg.Subject}\n\n{route.Reply}\n\n" +
             $"Reponds OUI pour envoyer, ou dis-moi quoi changer.{noReplyWarn}", ct);
         Console.WriteLine($"    -> proposition de reponse stockee (a {toAddress}).");
+    }
+
+    /// <summary>
+    /// « Envoie un mail a X » : compose un NOUVEAU mail (pas une reponse). Comme pour reply,
+    /// rien ne part sans validation : le brouillon est stocke et attend un OUI ("send").
+    /// Si le destinataire est donne par son nom, on tente de retrouver son adresse parmi
+    /// les mails recents ; sinon on demande l'adresse.
+    /// </summary>
+    private async Task HandleComposeAsync(Route route, IReadOnlyList<EmailItem> recent, CancellationToken ct)
+    {
+        if (route.Reply.Length == 0)
+        {
+            await SendTextAsync("Dis-moi quoi ecrire dans ce mail (destinataire + message).", ct);
+            return;
+        }
+
+        var toAddress = ResolveAddress(route.Query, recent);
+        if (toAddress is null)
+        {
+            await SendTextAsync(
+                route.Query.Length > 0
+                    ? $"Je n'ai pas d'adresse email pour « {route.Query} » (introuvable dans les mails recents). Donne-moi son adresse ?"
+                    : "A quelle adresse email dois-je envoyer ce mail ?", ct);
+            return;
+        }
+
+        var msg = new MimeMessage();
+        msg.From.Add(MailboxAddress.Parse(account.User));
+        msg.To.Add(toAddress);
+        msg.Subject = route.Subject.Length > 0 ? route.Subject : "(sans objet)";
+        msg.Body = new TextPart("plain") { Text = route.Reply };
+
+        await sender.SavePendingAsync(msg, ct);
+        await SendTextAsync(
+            $"📨 Nouveau mail pour {toAddress.Address}\nObjet : {msg.Subject}\n\n{route.Reply}\n\n" +
+            "Reponds OUI pour envoyer, ou dis-moi quoi changer.", ct);
+        Console.WriteLine($"    -> nouveau mail propose (a {toAddress.Address}).");
+    }
+
+    /// <summary>
+    /// Resout le destinataire d'un nouveau mail : adresse explicite si le routeur en a extrait
+    /// une, sinon recherche du nom parmi les expediteurs des mails recents. Null si introuvable.
+    /// </summary>
+    private static MailboxAddress? ResolveAddress(string query, IReadOnlyList<EmailItem> recent)
+    {
+        query = query.Trim().TrimEnd('.', ',', ';');
+        if (query.Length == 0) return null;
+
+        if (query.Contains('@') && MailboxAddress.TryParse(query, out var parsed))
+            return parsed;
+
+        foreach (var e in recent)
+        {
+            if (!e.From.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
+            var address = SenderAddress(e.From);
+            if (MailboxAddress.TryParse(address, out var fromRecent)) return fromRecent;
+        }
+        return null;
     }
 
     /// <summary>
@@ -456,12 +524,12 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
             var dto = JsonSerializer.Deserialize<RouteDto>(raw, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             var intent = dto?.Intent?.Trim().ToLowerInvariant() ?? "chat";
             return new Route(intent, dto?.Target ?? 0, dto?.Query?.Trim() ?? "", dto?.Reply?.Trim() ?? "",
-                dto?.Answer?.Trim() ?? "", dto?.Start?.Trim() ?? "", dto?.End?.Trim() ?? "");
+                dto?.Answer?.Trim() ?? "", dto?.Subject?.Trim() ?? "", dto?.Start?.Trim() ?? "", dto?.End?.Trim() ?? "");
         }
         catch (JsonException)
         {
             // En cas de doute, on ne fait jamais d'action sensible : on retombe sur "chat".
-            return new Route("chat", 0, "", "", "Je n'ai pas bien compris, peux-tu reformuler ?", "", "");
+            return new Route("chat", 0, "", "", "Je n'ai pas bien compris, peux-tu reformuler ?", "", "", "");
         }
     }
 
@@ -561,7 +629,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         return first >= 0 && last > first ? s[first..(last + 1)] : s;
     }
 
-    private sealed record Route(string Intent, int Target, string Query, string Reply, string Answer, string Start, string End);
+    private sealed record Route(string Intent, int Target, string Query, string Reply, string Answer, string Subject, string Start, string End);
 
-    private sealed record RouteDto(string? Intent, int Target, string? Query, string? Reply, string? Answer, string? Start, string? End);
+    private sealed record RouteDto(string? Intent, int Target, string? Query, string? Reply, string? Answer, string? Subject, string? Start, string? End);
 }

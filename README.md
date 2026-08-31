@@ -109,7 +109,9 @@ En parlant au bot tu peux : poser une question / demander un resume (contexte : 
 derniers mails, enrichi a la demande par les outils ci-dessus), demander **tes mails importants** (« quels mails dois-je traiter ? » —
 classe les non-repondus de la boite), **retrouver un mail** (« retrouve le mail de Mme X » —
 recherche expediteur/objet sur tout le compte, archives comprises), **repondre a un mail**
-(brouillon soumis a ta validation explicite), te **desabonner** d'une newsletter,
+(brouillon soumis a ta validation explicite), **envoyer un nouveau mail** (« envoie un mail
+a jean@exemple.fr pour lui dire que... » — meme circuit brouillon + validation ; si tu ne
+donnes qu'un nom, l'agent cherche l'adresse dans les mails recents), te **desabonner** d'une newsletter,
 **bloquer un expediteur** (« bloque Temu », « ignore ces mails » — ses prochains mails
 partent directement a la corbeille ; « debloque X » et « qui est bloque ? » pour gerer
 la liste, persistee dans un dossier IMAP dedie donc conservee entre les passes), et
