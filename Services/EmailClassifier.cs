@@ -121,8 +121,11 @@ public sealed class EmailClassifier(AccountConfig account, ILlmClient llm)
         }
         catch (JsonException)
         {
-            // Reponse non parsable : on garde le mail en boite, sans action, par securite.
-            return new Classification(false, "", false, "", "", "Reponse du modele non parsable.", "", null);
+            // Reponse non parsable (souvent un modele a reflexion tronque sous pression de quota) :
+            // erreur NON fatale, propre a ce mail. L'appelant le journalise sans le marquer, et il
+            // sera reclasse a la passe suivante. Le traiter comme "garder" le marquerait traite et
+            // un mail important ne serait alors JAMAIS notifie.
+            throw new LlmException("Reponse du modele non parsable, mail reessaye a la prochaine passe.", fatal: false);
         }
     }
 
