@@ -155,7 +155,7 @@ static async Task<bool> RunOnceAsync(
 
     // Heures silencieuses : pendant la plage de nuit, les notifications sont reportees.
     var quiet = IsQuietNow(config.Agent);
-    if (quiet) Console.WriteLine("Heures silencieuses : notifications suspendues (rangement maintenu).");
+    if (quiet) Console.WriteLine("Heures silencieuses : notifications reportees au matin (rangement maintenu).");
 
     var fullBatch = false;
     var importantEmails = new List<MailAgent.Models.EmailItem>();       // contexte pour l'assistant Telegram
@@ -184,13 +184,18 @@ static async Task<bool> RunOnceAsync(
         var label = account.Name.Length > 0 ? $" [{account.Name}]" : "";
         Console.WriteLine($"[{DateTime.Now:HH:mm:ss}]{label} Lecture des mails a traiter..."
             + (dryRun ? "  [MODE TEST : aucune action]" : ""));
-        var emails = await reader.GetToProcessAsync(ct);
+        // Pendant les heures silencieuses, les mails deja marques "notif reportee" sont ignores
+        // (sinon ils seraient re-classes par le LLM a chaque passe de la nuit : quota gaspille).
+        var emails = await reader.GetToProcessAsync(excludeDeferred: quiet, ct);
         Console.WriteLine($"  {emails.Count} mail(s) a traiter.");
         fullBatch |= emails.Count >= account.Imap.MaxPerPass;
 
         var toKeep = new List<MailKit.UniqueId>(emails.Count);          // restent en boite (marquage anti-doublon)
         var toMove = new Dictionary<string, List<MailKit.UniqueId>>();  // dossier -> mails a classer
         var toTrash = new List<MailKit.UniqueId>();                     // expediteurs auto-supprimes -> corbeille
+        var toDefer = new List<MailKit.UniqueId>();                     // notif reportee (heures silencieuses)
+        var toUndefer = new List<MailKit.UniqueId>();                   // reportes la nuit, repris maintenant
+        var digest = new List<string>();                                // notifs reportees -> un seul recap
         LlmException? fatalLlm = null;                                  // LLM epuise : on flush l'etat AVANT de stopper
 
         foreach (var email in emails)
@@ -209,6 +214,7 @@ static async Task<bool> RunOnceAsync(
             }
 
             var result = await classifier.ClassifyAsync(email, ct);
+            if (email.Deferred) toUndefer.Add(email.Uid);   // repris : le marqueur de report est retire
             // Important = action a faire OU sujet/personne prioritaire (ex. les enfants). Dans les
             // deux cas on notifie (si pas deja repondu) et le mail reste TOUJOURS en boite, pour ne
             // pas le faire disparaitre. Sinon : on classe vers une nature autorisee uniquement.
@@ -227,11 +233,13 @@ static async Task<bool> RunOnceAsync(
                     ? $"{nature}/{result.Source}"
                     : nature;
 
-            // Heures silencieuses : une notif attendue est reportee. On laisse le mail en
-            // boite SANS le marquer, pour qu'il soit repris et notifie apres la plage silencieuse.
+            // Heures silencieuses : une notif attendue est reportee. Le mail reste en boite avec
+            // un marqueur de report : ignore jusqu'a la fin de la plage, puis repris UNE fois
+            // (re-classe, notifie dans le recapitulatif du matin, marque traite).
             if (notify && quiet)
             {
                 Console.WriteLine($"  [DIFFERE      ] {(email.Seen ? "lu   " : "nonlu")} {email.Subject}  - notif reportee (heures silencieuses)");
+                if (!dryRun) toDefer.Add(email.Uid);
                 continue;
             }
 
@@ -247,7 +255,14 @@ static async Task<bool> RunOnceAsync(
                 continue;
             }
 
-            if (notify)
+            if (notify && email.Deferred)
+            {
+                // Reporte pendant la nuit : regroupe dans un recapitulatif unique (envoye en fin
+                // de fournee) plutot qu'une rafale de notifs au reveil.
+                digest.Add(TelegramNotifier.FormatNotification(email, result));
+                Console.WriteLine("    -> notification ajoutee au recapitulatif.");
+            }
+            else if (notify)
             {
                 await notifier.NotifyAsync(email, result, ct);
                 Console.WriteLine("    -> notification Telegram envoyee.");
@@ -318,6 +333,31 @@ static async Task<bool> RunOnceAsync(
 
         if (!dryRun)
         {
+            // Recapitulatif des notifs reportees : envoye AVANT le marquage. En cas d'echec
+            // Telegram, les mails repris ne sont ni marques ni liberes de leur marqueur de
+            // report : ils seront repris (et le recap renvoye) a la passe suivante.
+            if (digest.Count > 0)
+            {
+                try
+                {
+                    await notifier.NotifyDigestAsync(digest, ct);
+                    Console.WriteLine($"  Recapitulatif envoye ({digest.Count} notif(s) reportee(s)).");
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  [TELEGRAM] recapitulatif non envoye ({ex.Message}) : mails reportes repris a la prochaine passe.");
+                    toKeep.RemoveAll(toUndefer.Contains);
+                    toUndefer.Clear();
+                }
+            }
+
+            // Marqueurs de report : retires des mails repris (avant tout deplacement, les UIDs
+            // de la boite restent valides), poses sur ceux reportes cette nuit.
+            await reader.ClearDeferredAsync(toUndefer, ct);
+            await reader.MarkDeferredAsync(toDefer, ct);
+            if (toDefer.Count > 0) Console.WriteLine($"  {toDefer.Count} notif(s) reportee(s) apres les heures silencieuses.");
+
             // Classe chaque mail dans son dossier, puis marque ceux gardes en boite (anti-doublon).
             foreach (var (folder, uids) in toMove)
             {

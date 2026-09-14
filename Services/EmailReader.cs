@@ -16,7 +16,11 @@ public sealed class EmailReader(AccountConfig account)
 {
     private const int BodyPreviewMaxChars = 2000;
 
-    public async Task<IReadOnlyList<EmailItem>> GetToProcessAsync(CancellationToken ct = default)
+    /// <param name="excludeDeferred">
+    /// true (heures silencieuses) : ignore les mails deja marques "notif reportee", pour ne pas
+    /// les re-classer a chaque passe de la nuit. false : ils sont repris (et notifies).
+    /// </param>
+    public async Task<IReadOnlyList<EmailItem>> GetToProcessAsync(bool excludeDeferred, CancellationToken ct = default)
     {
         using var client = new ImapClient();
         await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
@@ -28,6 +32,8 @@ public sealed class EmailReader(AccountConfig account)
         // Tous les mails (lus comme non lus) SANS le marqueur de suivi, limites aux MaxAgeDays
         // derniers jours. L'etat anti-doublon vit dans la boite (pas de state.json).
         SearchQuery query = SearchQuery.NotKeyword(account.Imap.NotifiedKeyword);
+        if (excludeDeferred)
+            query = query.And(SearchQuery.NotKeyword(account.Imap.DeferredKeyword));
         if (account.Imap.MaxAgeDays > 0)
             query = query.And(SearchQuery.DeliveredAfter(DateTime.Now.AddDays(-account.Imap.MaxAgeDays)));
         var uids = await inbox.SearchAsync(query, ct);
@@ -40,10 +46,15 @@ public sealed class EmailReader(AccountConfig account)
             return [];
         }
 
-        // Drapeaux (lu / repondu) en un seul fetch, pour calibrer les notifications.
+        // Drapeaux (lu / repondu) et keywords (notif reportee) en un seul fetch.
         var flagsByUid = new Dictionary<UniqueId, MessageFlags>();
+        var deferredUids = new HashSet<UniqueId>();
         foreach (var s in await inbox.FetchAsync(selected, MessageSummaryItems.Flags, ct))
+        {
             flagsByUid[s.UniqueId] = s.Flags ?? MessageFlags.None;
+            if (s.Keywords is not null && s.Keywords.Contains(account.Imap.DeferredKeyword))
+                deferredUids.Add(s.UniqueId);
+        }
 
         var items = new List<EmailItem>(selected.Count);
         foreach (var uid in selected)
@@ -51,9 +62,7 @@ public sealed class EmailReader(AccountConfig account)
             ct.ThrowIfCancellationRequested();
 
             var msg = await inbox.GetMessageAsync(uid, ct);
-            var body = msg.TextBody ?? msg.HtmlBody ?? "";
-            if (body.Length > BodyPreviewMaxChars)
-                body = body[..BodyPreviewMaxChars];
+            var body = ExtractBody(msg, BodyPreviewMaxChars);
 
             // Defaut sur (lu + repondu) si les drapeaux manquent : ne pas notifier par securite.
             var flags = flagsByUid.TryGetValue(uid, out var f) ? f : (MessageFlags.Seen | MessageFlags.Answered);
@@ -68,11 +77,25 @@ public sealed class EmailReader(AccountConfig account)
                 Date: msg.Date,
                 UnsubscribeHeader: msg.Headers["List-Unsubscribe"] ?? "",
                 OneClickUnsubscribe: (msg.Headers["List-Unsubscribe-Post"] ?? "")
-                    .Contains("One-Click", StringComparison.OrdinalIgnoreCase)));
+                    .Contains("One-Click", StringComparison.OrdinalIgnoreCase),
+                Deferred: deferredUids.Contains(uid)));
         }
 
         await client.DisconnectAsync(true, ct);
         return items;
+    }
+
+    /// <summary>
+    /// Corps d'un mail en TEXTE, tronque a maxChars. La partie texte est preferee ; a defaut,
+    /// la partie HTML est convertie (balises, styles et scripts retires) : sans cela, un mail
+    /// HTML-seul ne donnait au modele que des balises et du CSS dans ses premiers caracteres.
+    /// </summary>
+    private static string ExtractBody(MimeKit.MimeMessage msg, int maxChars)
+    {
+        var body = msg.TextBody;
+        if (string.IsNullOrWhiteSpace(body))
+            body = HtmlText.ToPlainText(msg.HtmlBody ?? "");
+        return body.Length > maxChars ? body[..maxChars] : body;
     }
 
     /// <summary>
@@ -144,8 +167,7 @@ public sealed class EmailReader(AccountConfig account)
             ct.ThrowIfCancellationRequested();
 
             var msg = await inbox.GetMessageAsync(uid, ct);
-            var body = msg.TextBody ?? msg.HtmlBody ?? "";
-            if (body.Length > 600) body = body[..600];   // apercu court pour le contexte conversationnel
+            var body = ExtractBody(msg, 600);   // apercu court pour le contexte conversationnel
 
             var flags = flagsByUid.TryGetValue(uid, out var f) ? f : MessageFlags.None;
             items.Add(new EmailItem(
@@ -202,7 +224,11 @@ public sealed class EmailReader(AccountConfig account)
         await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
         await client.AuthenticateAsync(account.User, account.Password, ct);
 
-        var all = client.GetFolder(SpecialFolder.All) ?? client.Inbox;
+        // "Tous les messages" n'existe que sur Gmail ; un serveur sans SPECIAL-USE (OVH...)
+        // leve NotSupportedException : on cherche alors dans la boite de reception seule.
+        IMailFolder all;
+        try { all = client.GetFolder(SpecialFolder.All) ?? client.Inbox; }
+        catch (NotSupportedException) { all = client.Inbox; }
         await all.OpenAsync(FolderAccess.ReadOnly, ct);
 
         var q = SearchQuery.FromContains(query).Or(SearchQuery.SubjectContains(query));
@@ -231,10 +257,10 @@ public sealed class EmailReader(AccountConfig account)
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
         var msg = await inbox.GetMessageAsync(uid, ct);
-        var body = msg.TextBody ?? msg.HtmlBody ?? "";
+        var body = ExtractBody(msg, maxChars);
         await client.DisconnectAsync(true, ct);
 
-        return body.Length > maxChars ? body[..maxChars] : body;
+        return body;
     }
 
     /// <summary>Convertit un resume IMAP (envelope + flags, sans corps) en EmailItem.</summary>
@@ -268,6 +294,43 @@ public sealed class EmailReader(AccountConfig account)
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
         await inbox.AddFlagsAsync(uids, MessageFlags.None,
             new HashSet<string> { account.Imap.NotifiedKeyword }, silent: true, ct);
+
+        await client.DisconnectAsync(true, ct);
+    }
+
+    /// <summary>
+    /// Marque les mails dont la notification est reportee (heures silencieuses). Ils sont
+    /// ignores par les passes suivantes tant que la plage dure, puis repris UNE fois.
+    /// </summary>
+    public async Task MarkDeferredAsync(IList<UniqueId> uids, CancellationToken ct = default)
+    {
+        if (uids.Count == 0) return;
+
+        using var client = new ImapClient();
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
+
+        var inbox = client.Inbox;
+        await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
+        await inbox.AddFlagsAsync(uids, MessageFlags.None,
+            new HashSet<string> { account.Imap.DeferredKeyword }, silent: true, ct);
+
+        await client.DisconnectAsync(true, ct);
+    }
+
+    /// <summary>Retire le marqueur "notif reportee" des mails repris apres les heures silencieuses.</summary>
+    public async Task ClearDeferredAsync(IList<UniqueId> uids, CancellationToken ct = default)
+    {
+        if (uids.Count == 0) return;
+
+        using var client = new ImapClient();
+        await client.ConnectAsync(account.Imap.Host, account.Imap.Port, SecureSocketOptions.SslOnConnect, ct);
+        await client.AuthenticateAsync(account.User, account.Password, ct);
+
+        var inbox = client.Inbox;
+        await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
+        await inbox.RemoveFlagsAsync(uids, MessageFlags.None,
+            new HashSet<string> { account.Imap.DeferredKeyword }, silent: true, ct);
 
         await client.DisconnectAsync(true, ct);
     }
@@ -316,11 +379,41 @@ public sealed class EmailReader(AccountConfig account)
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
 
-        var trash = client.GetFolder(SpecialFolder.Trash)
-            ?? throw new InvalidOperationException("Dossier Corbeille introuvable sur le serveur IMAP.");
+        var trash = await FindTrashAsync(client, account.Imap, ct)
+            ?? throw new InvalidOperationException(
+                "Dossier Corbeille introuvable sur le serveur IMAP (renseigne Imap:TrashFolder pour cette boite).");
         await inbox.MoveToAsync(uids, trash, ct);
 
         await client.DisconnectAsync(true, ct);
+    }
+
+    /// <summary>
+    /// Corbeille du compte : dossier special (Gmail, serveurs SPECIAL-USE), sinon le nom configure
+    /// (Imap:TrashFolder), sinon les noms usuels. Null si rien ne convient.
+    /// </summary>
+    public static async Task<IMailFolder?> FindTrashAsync(ImapClient client, ImapConfig imap, CancellationToken ct)
+    {
+        try
+        {
+            var special = client.GetFolder(SpecialFolder.Trash);
+            if (special is not null) return special;
+        }
+        catch (NotSupportedException) { /* pas de SPECIAL-USE : on cherche par nom */ }
+
+        var root = client.GetFolder(client.PersonalNamespaces[0]);
+        var candidates = imap.TrashFolder.Length > 0
+            ? [imap.TrashFolder]
+            : new[] { "Trash", "Corbeille", "Deleted Messages", "Éléments supprimés", "Deleted Items" };
+        foreach (var name in candidates)
+        {
+            try
+            {
+                var f = await root.GetSubfolderAsync(name, ct);
+                if (f.Exists) return f;
+            }
+            catch (FolderNotFoundException) { }
+        }
+        return null;
     }
 
     /// <summary>
@@ -333,15 +426,16 @@ public sealed class EmailReader(AccountConfig account)
         var current = root;
         foreach (var name in folderPath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            IMailFolder child;
+            IMailFolder? child = null;
             try
             {
                 child = await current.GetSubfolderAsync(name, ct);
+                // Certains serveurs (Dovecot/OVH) renvoient un dossier "fantome" plutot qu'une
+                // erreur pour un nom inconnu : on verifie qu'il existe vraiment avant de s'en servir.
+                if (!child.Exists) child = null;
             }
-            catch (FolderNotFoundException)
-            {
-                child = await current.CreateAsync(name, isMessageFolder: true, ct);
-            }
+            catch (FolderNotFoundException) { }
+            child ??= await current.CreateAsync(name, isMessageFolder: true, ct);
             current = child;
         }
         return current;

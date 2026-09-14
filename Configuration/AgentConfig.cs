@@ -76,10 +76,24 @@ public sealed class ImapConfig
     public string NotifiedKeyword { get; init; } = "MailAgentNotified";
 
     /// <summary>
+    /// Marqueur IMAP pose sur les mails dont la notification est REPORTEE (heures silencieuses).
+    /// Ils sont ignores jusqu'a la fin de la plage, puis repris une seule fois et notifies dans
+    /// un recapitulatif -- sans etre re-classes par le LLM a chaque passe de la nuit.
+    /// </summary>
+    public string DeferredKeyword { get; init; } = "MailAgentDeferred";
+
+    /// <summary>
     /// Dossier IMAP (boite principale) ou est persistee la liste des expediteurs bloques
     /// depuis Telegram (« bloque X »). Voir BlockListStore.
     /// </summary>
     public string BlocklistFolder { get; init; } = "MailAgentBlocklist";
+
+    /// <summary>
+    /// Nom de la corbeille (relatif a la racine du compte) pour les serveurs qui n'annoncent pas
+    /// de dossiers speciaux (SPECIAL-USE), ex. OVH : "Trash", "Corbeille", "Éléments supprimés".
+    /// Vide = detection automatique (dossier special, puis noms usuels).
+    /// </summary>
+    public string TrashFolder { get; init; } = "";
 
     /// <summary>Dossiers (natures) de classement autorises (le modele choisit parmi eux ; sinon le mail reste en boite).</summary>
     public string[] Folders { get; init; } =
@@ -223,6 +237,12 @@ public sealed class SmtpConfig
 
     /// <summary>Dossier IMAP ou est stocke le brouillon en attente de validation (un seul a la fois).</summary>
     public string PendingFolder { get; init; } = "MailAgentPending";
+
+    /// <summary>
+    /// Duree de vie (heures) d'un brouillon en attente. Au-dela, il est annule : un « oui »
+    /// envoye des jours plus tard, a propos d'autre chose, ne doit jamais expedier un mail oublie.
+    /// </summary>
+    public int PendingTtlHours { get; init; } = 24;
 }
 
 public sealed class RuntimeConfig

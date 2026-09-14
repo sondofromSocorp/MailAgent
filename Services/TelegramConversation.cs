@@ -41,6 +41,12 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                      subject = un objet court et pertinent en francais. reply = le texte COMPLET et
                      poli du mail, redige AU NOM DE L'UTILISATEUR, avec salutation et formule de
                      politesse, en francais. target=0, answer="".
+        - "revise" : un BROUILLON EST EN ATTENTE (section "Brouillon en attente" fournie) et
+                     l'utilisateur veut le MODIFIER (ex. "plus court", "plus formel", "ajoute que je
+                     serai en retard", "enleve la derniere phrase", "change l'objet", "tutoie-le").
+                     reply = le texte COMPLET du brouillon REECRIT en appliquant la demande : repars
+                     du brouillon fourni, PAS d'un mail de la liste. subject = le nouvel objet si
+                     l'utilisateur le change, sinon "". target=0, answer="".
         - "send"   : l'utilisateur VALIDE l'envoi en attente (ex. "oui", "envoie", "valide",
                      "ok envoie", "c'est bon"). target=0, reply="", answer="".
         - "cancel" : l'utilisateur ANNULE (ex. "annule", "non laisse tomber"). target=0, reply="", answer="".
@@ -77,6 +83,11 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         - "chat"   : tout le reste (question, resume, demande d'info). answer = ta reponse en francais
                      (resume / reponse), en t'appuyant sur le contenu des mails. target=0, reply="".
 
+        S'il y a un brouillon en attente et que le message porte sur CE brouillon (modification,
+        reformulation, correction), c'est "revise" : jamais "reply" ni "compose" dans ce cas.
+        Si des PIECES JOINTES sont fournies (liste en contexte), elles seront ajoutees
+        automatiquement au mail : mentionne-les naturellement dans le texte redige
+        (ex. "Vous trouverez ci-joint ..."), sans inventer leur contenu.
         En cas de DOUTE, choisis "chat" : ne declenche JAMAIS un envoi par erreur.
         Reponds UNIQUEMENT le JSON, sans texte ni balise autour.
         """;
@@ -93,15 +104,16 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         var context = BuildContext(recentImportant, recent);
 
         long maxUpdateId = 0;
-        foreach (var (updateId, chatId, messageId, text) in updates)
+        foreach (var u in updates)
         {
-            maxUpdateId = Math.Max(maxUpdateId, updateId);
-            if (chatId.ToString() != config.Telegram.ChatId || string.IsNullOrWhiteSpace(text)) continue;
+            maxUpdateId = Math.Max(maxUpdateId, u.UpdateId);
+            // Un message sans texte ni fichier (sticker, vocal, contact...) est ignore.
+            if (u.ChatId.ToString() != config.Telegram.ChatId || (string.IsNullOrWhiteSpace(u.Text) && u.File is null)) continue;
 
-            Console.WriteLine($"  [TELEGRAM] recu : {text}");
+            Console.WriteLine($"  [TELEGRAM] recu : {u.Text}{(u.File is null ? "" : $" [fichier : {u.File.FileName}]")}");
             try
             {
-                await HandleAsync(text, context, recent, messageId, ct);
+                await HandleAsync(u, context, recent, ct);
             }
             catch (Exception ex)
             {
@@ -113,13 +125,64 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         await ConfirmUpdatesAsync(maxUpdateId + 1, ct);
     }
 
-    private async Task HandleAsync(string text, string context, IReadOnlyList<EmailItem> recent, long messageId, CancellationToken ct)
+    private async Task HandleAsync(Incoming u, string context, IReadOnlyList<EmailItem> recent, CancellationToken ct)
     {
-        var route = await RouteAsync(text, context, ct);
+        var text = u.Text;
+        var messageId = u.MessageId;
+
+        // Le brouillon en attente fait partie du contexte du routeur : « oui » veut dire
+        // « envoie », « plus court » veut dire « modifie ce brouillon » (et pas une nouvelle
+        // reponse a un autre mail). Relu a chaque message : il change au fil de la conversation.
+        var (found, expired) = await GetValidPendingAsync(ct);
+        var pending = expired ? null : found;   // expire = deja annule (avec ses pieces jointes)
+
+        // Pieces jointes : celles deja recues et en attente, plus celle du message courant.
+        // Un fichier est toujours stocke des sa reception : il survit a la fin de la passe et
+        // sera fusionne dans le prochain brouillon (reponse, nouveau mail ou retouche). Meme
+        // duree de vie que le brouillon : au-dela, un fichier oublie n'est plus joint.
+        var attachments = new List<PendingAttachment>(
+            await sender.GetAttachmentsAsync(TimeSpan.FromHours(config.Smtp.PendingTtlHours), ct));
+        if (u.File is not null)
+        {
+            PendingAttachment received;
+            try { received = await DownloadAsync(u.File, ct); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                await SendTextAsync($"❌ Je n'ai pas pu recuperer le fichier « {u.File.FileName} » : {ex.Message}", ct);
+                return;
+            }
+            await sender.SaveAttachmentAsync(received, ct);
+            attachments.Add(received);
+            Console.WriteLine($"    -> piece jointe stockee : {received.FileName} ({received.SizeLabel}).");
+
+            // Fichier envoye SANS consigne : on l'ajoute au brouillon en cours s'il y en a un,
+            // sinon on le garde pour le prochain et on le dit (plutot que d'ignorer en silence).
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                if (pending is not null) await AttachToPendingAsync(pending, attachments, ct);
+                else await SendTextAsync(
+                    $"📎 Fichier recu : {received.FileName} ({received.SizeLabel}). Dis-moi a quel mail repondre "
+                    + "ou a qui l'envoyer, je le joindrai au brouillon.", ct);
+                return;
+            }
+        }
+
+        var routerContext = context;
+        if (pending is not null) routerContext += "\n\n" + DescribePending(pending);
+        if (attachments.Count > 0)
+            routerContext += "\n\nPiece(s) jointe(s) fournie(s) par l'utilisateur, a joindre au prochain mail : "
+                + string.Join(", ", attachments.Select(a => $"{a.FileName} ({a.SizeLabel})"));
+
+        var route = await RouteAsync(text, routerContext, ct);
+        var consumes = route.Intent is "reply" or "compose" or "revise";
         switch (route.Intent)
         {
             case "send":
-                await HandleSendAsync(ct);
+                await HandleSendAsync(found, expired, ct);
+                break;
+            case "revise":
+                await HandleReviseAsync(route, found, expired, attachments, ct);
                 break;
             case "cancel":
                 await sender.DeletePendingAsync(ct);
@@ -127,10 +190,10 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                 Console.WriteLine("    -> brouillon annule.");
                 break;
             case "reply":
-                await HandleReplyAsync(route, recent, ct);
+                await HandleReplyAsync(route, recent, attachments, ct);
                 break;
             case "compose":
-                await HandleComposeAsync(route, recent, ct);
+                await HandleComposeAsync(route, recent, attachments, ct);
                 break;
             case "unsub":
                 await HandleUnsubscribeAsync(route, recent, ct);
@@ -176,6 +239,81 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                 Console.WriteLine("    -> reponse chat envoyee.");
                 break;
         }
+
+        // Fichier joint a une demande qui ne produit pas de brouillon (question, recherche...) :
+        // il reste en attente, on le dit pour que l'utilisateur sache qu'il n'est pas perdu.
+        if (u.File is not null && !consumes && route.Intent is not "cancel")
+            await SendTextAsync($"📎 J'ai garde « {u.File.FileName} » de cote : je le joindrai au prochain mail que tu me feras ecrire.", ct);
+    }
+
+    /// <summary>
+    /// Fichier recu alors qu'un brouillon attend deja validation : on le joint a ce brouillon
+    /// (reconstruit a l'identique avec les pieces jointes) et on represente la proposition.
+    /// </summary>
+    private async Task AttachToPendingAsync(MimeMessage pending, IReadOnlyList<PendingAttachment> attachments, CancellationToken ct)
+    {
+        var msg = CloneDraft(pending, pending.TextBody ?? "", pending.Subject, attachments);
+        await sender.SavePendingAsync(msg, ct);
+        await SendTextAsync(
+            $"📎 Piece(s) jointe(s) ajoutee(s) au brouillon pour {msg.To}\nObjet : {msg.Subject}\n{DescribeAttachments(msg)}\n\n"
+            + "Reponds OUI pour envoyer, ou dis-moi quoi changer.", ct);
+        Console.WriteLine($"    -> {attachments.Count} piece(s) jointe(s) ajoutee(s) au brouillon (a {msg.To}).");
+    }
+
+    /// <summary>
+    /// Nouveau brouillon a partir d'un brouillon existant : memes destinataires et fil de
+    /// discussion, texte et objet donnes, pieces jointes existantes conservees + nouvelles.
+    /// </summary>
+    private MimeMessage CloneDraft(MimeMessage pending, string text, string subject, IEnumerable<PendingAttachment> added)
+    {
+        var msg = new MimeMessage();
+        msg.From.Add(MailboxAddress.Parse(account.User));
+        msg.To.AddRange(pending.To);
+        msg.Cc.AddRange(pending.Cc);
+        msg.Subject = subject;
+        if (!string.IsNullOrEmpty(pending.InReplyTo))
+        {
+            msg.InReplyTo = pending.InReplyTo;
+            msg.References.AddRange(pending.References);
+        }
+        msg.Body = BuildBody(text, pending.Attachments, added);
+        return msg;
+    }
+
+    /// <summary>Corps texte + pieces jointes (entites deja presentes dans un brouillon, et nouvelles).</summary>
+    private static MimeEntity BuildBody(string text, IEnumerable<MimeEntity> existing, IEnumerable<PendingAttachment> added)
+    {
+        var builder = new BodyBuilder { TextBody = text };
+        foreach (var e in existing) builder.Attachments.Add(e);
+        foreach (var a in added) builder.Attachments.Add(a.FileName, a.Data, EmailSender.ParseContentType(a.MimeType));
+        return builder.ToMessageBody();
+    }
+
+    /// <summary>Ligne « 📎 ... » listant les pieces jointes d'un brouillon, ou "" s'il n'y en a pas.</summary>
+    private static string DescribeAttachments(MimeMessage msg)
+    {
+        var names = msg.Attachments.OfType<MimePart>().Select(p => p.FileName ?? "fichier").ToList();
+        return names.Count == 0 ? "" : $"📎 Piece(s) jointe(s) : {string.Join(", ", names)}";
+    }
+
+    /// <summary>Telecharge un fichier recu sur Telegram (getFile + telechargement), borne en taille.</summary>
+    private async Task<PendingAttachment> DownloadAsync(TelegramFile file, CancellationToken ct)
+    {
+        const long maxBytes = 20L * 1024 * 1024;   // limite de l'API Bot Telegram pour getFile
+        if (file.Size > maxBytes)
+            throw new InvalidOperationException($"fichier trop volumineux ({file.Size / 1048576.0:0.0} Mo), Telegram limite a 20 Mo pour les bots.");
+
+        var token = config.Telegram.BotToken;
+        using var resp = await http.GetAsync($"https://api.telegram.org/bot{token}/getFile?file_id={Uri.EscapeDataString(file.FileId)}", ct);
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Telegram a refuse getFile (HTTP {(int)resp.StatusCode}) : {body}");
+        using var doc = JsonDocument.Parse(body);
+        var path = doc.RootElement.GetProperty("result").GetProperty("file_path").GetString()
+            ?? throw new InvalidOperationException("Telegram n'a pas renvoye de chemin de fichier.");
+
+        var data = await http.GetByteArrayAsync($"https://api.telegram.org/file/bot{token}/{path}", ct);
+        return new PendingAttachment(file.FileName, file.MimeType, data);
     }
 
     /// <summary>
@@ -250,16 +388,16 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         Console.WriteLine($"    -> purge : {deleted} message(s) efface(s).");
     }
 
-    private async Task HandleReplyAsync(Route route, IReadOnlyList<EmailItem> recent, CancellationToken ct)
+    private async Task HandleReplyAsync(Route route, IReadOnlyList<EmailItem> recent, IReadOnlyList<PendingAttachment> attachments, CancellationToken ct)
     {
         if (route.Target < 1 || route.Target > recent.Count || route.Reply.Length == 0)
         {
-            await SendTextAsync("Je n'ai pas reussi a identifier le mail auquel repondre (il n'est peut-etre pas dans les 15 derniers). Precise l'expediteur ?", ct);
+            await SendTextAsync("Je n'ai pas reussi a identifier le mail auquel repondre (il n'est peut-etre pas dans les 30 derniers). Precise l'expediteur ?", ct);
             return;
         }
 
         var original = recent[route.Target - 1];
-        var msg = BuildReply(original, route.Reply, out var toAddress);
+        var msg = BuildReply(original, route.Reply, attachments, out var toAddress);
         if (toAddress is null)
         {
             await SendTextAsync($"Impossible de determiner l'adresse de reponse pour \"{original.Subject}\".", ct);
@@ -275,9 +413,9 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                 : "";
 
         await SendTextAsync(
-            $"✉️ Proposition de reponse a {toAddress}\nObjet : {msg.Subject}\n\n{route.Reply}\n\n" +
+            $"✉️ Proposition de reponse a {toAddress}\nObjet : {msg.Subject}\n{DescribeAttachments(msg)}\n\n{route.Reply}\n\n" +
             $"Reponds OUI pour envoyer, ou dis-moi quoi changer.{noReplyWarn}", ct);
-        Console.WriteLine($"    -> proposition de reponse stockee (a {toAddress}).");
+        Console.WriteLine($"    -> proposition de reponse stockee (a {toAddress}, {attachments.Count} piece(s) jointe(s)).");
     }
 
     /// <summary>
@@ -286,7 +424,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
     /// Si le destinataire est donne par son nom, on tente de retrouver son adresse parmi
     /// les mails recents ; sinon on demande l'adresse.
     /// </summary>
-    private async Task HandleComposeAsync(Route route, IReadOnlyList<EmailItem> recent, CancellationToken ct)
+    private async Task HandleComposeAsync(Route route, IReadOnlyList<EmailItem> recent, IReadOnlyList<PendingAttachment> attachments, CancellationToken ct)
     {
         if (route.Reply.Length == 0)
         {
@@ -308,13 +446,13 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         msg.From.Add(MailboxAddress.Parse(account.User));
         msg.To.Add(toAddress);
         msg.Subject = route.Subject.Length > 0 ? route.Subject : "(sans objet)";
-        msg.Body = new TextPart("plain") { Text = route.Reply };
+        msg.Body = BuildBody(route.Reply, [], attachments);
 
         await sender.SavePendingAsync(msg, ct);
         await SendTextAsync(
-            $"📨 Nouveau mail pour {toAddress.Address}\nObjet : {msg.Subject}\n\n{route.Reply}\n\n" +
+            $"📨 Nouveau mail pour {toAddress.Address}\nObjet : {msg.Subject}\n{DescribeAttachments(msg)}\n\n{route.Reply}\n\n" +
             "Reponds OUI pour envoyer, ou dis-moi quoi changer.", ct);
-        Console.WriteLine($"    -> nouveau mail propose (a {toAddress.Address}).");
+        Console.WriteLine($"    -> nouveau mail propose (a {toAddress.Address}, {attachments.Count} piece(s) jointe(s)).");
     }
 
     /// <summary>
@@ -457,7 +595,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
     {
         if (route.Target < 1 || route.Target > recent.Count)
         {
-            await SendTextAsync("Je n'ai pas identifie le mail dont tu veux te desabonner (il n'est peut-etre pas dans les 15 derniers). Precise l'expediteur ?", ct);
+            await SendTextAsync("Je n'ai pas identifie le mail dont tu veux te desabonner (il n'est peut-etre pas dans les 30 derniers). Precise l'expediteur ?", ct);
             return;
         }
 
@@ -467,24 +605,90 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         Console.WriteLine($"    -> desabonnement \"{email.Subject}\" : {outcome}");
     }
 
-    private async Task HandleSendAsync(CancellationToken ct)
+    private async Task HandleSendAsync(MimeMessage? pending, bool expired, CancellationToken ct)
     {
-        var pending = await sender.GetPendingAsync(ct);
+        if (expired && pending is not null)
+        {
+            await SendTextAsync(ExpiredMessage(pending), ct);
+            return;
+        }
         if (pending is null)
         {
-            await SendTextAsync("Il n'y a aucune reponse en attente a envoyer.", ct);
+            await SendTextAsync("Il n'y a aucun mail en attente a envoyer.", ct);
             return;
         }
 
         await sender.SendAsync(pending, ct);
         await sender.DeletePendingAsync(ct);
         var to = pending.To.ToString();
-        await SendTextAsync($"✅ Envoye a {to}.", ct);
+        await SendTextAsync($"✅ Envoye a {to} : « {pending.Subject} ».", ct);
         Console.WriteLine($"    -> mail envoye a {to}.");
     }
 
+    /// <summary>
+    /// « Plus court », « ajoute que... » : remplace le brouillon en attente par sa version
+    /// reecrite (meme destinataire, meme fil de discussion), toujours soumise a validation.
+    /// </summary>
+    private async Task HandleReviseAsync(Route route, MimeMessage? pending, bool expired, IReadOnlyList<PendingAttachment> attachments, CancellationToken ct)
+    {
+        if (expired && pending is not null)
+        {
+            await SendTextAsync(ExpiredMessage(pending), ct);
+            return;
+        }
+        if (pending is null)
+        {
+            await SendTextAsync("Il n'y a aucun brouillon en attente a modifier. Dis-moi a qui repondre ou quoi envoyer.", ct);
+            return;
+        }
+        if (route.Reply.Length == 0)
+        {
+            await SendTextAsync("Dis-moi ce que tu veux changer dans le brouillon (ton, longueur, contenu, objet).", ct);
+            return;
+        }
+
+        // Les pieces jointes deja dans le brouillon sont conservees, les nouvelles ajoutees.
+        var msg = CloneDraft(pending, route.Reply, route.Subject.Length > 0 ? route.Subject : pending.Subject, attachments);
+
+        await sender.SavePendingAsync(msg, ct);
+        await SendTextAsync(
+            $"✏️ Brouillon mis a jour pour {msg.To}\nObjet : {msg.Subject}\n{DescribeAttachments(msg)}\n\n{route.Reply}\n\n" +
+            "Reponds OUI pour envoyer, ou dis-moi quoi changer.", ct);
+        Console.WriteLine($"    -> brouillon revise (a {msg.To}).");
+    }
+
+    /// <summary>
+    /// Brouillon en attente encore valide. Un brouillon plus vieux que Smtp:PendingTtlHours est
+    /// annule (corbeille) et signale Expired=true : un « oui » tardif, a propos d'autre chose,
+    /// ne doit jamais expedier un mail oublie.
+    /// </summary>
+    private async Task<(MimeMessage? Pending, bool Expired)> GetValidPendingAsync(CancellationToken ct)
+    {
+        var pending = await sender.GetPendingAsync(ct);
+        if (pending is null) return (null, false);
+
+        var age = DateTimeOffset.Now - pending.Date;
+        if (age <= TimeSpan.FromHours(config.Smtp.PendingTtlHours)) return (pending, false);
+
+        await sender.DeletePendingAsync(ct);
+        Console.WriteLine($"    -> brouillon expire ({age.TotalHours:0} h, a {pending.To}) : annule.");
+        return (pending, true);
+    }
+
+    private string ExpiredMessage(MimeMessage pending) =>
+        $"⏳ Le brouillon pour {pending.To} (« {pending.Subject} ») datait de plus de "
+        + $"{config.Smtp.PendingTtlHours} h : je l'ai annule par securite, rien n'a ete envoye. "
+        + "Redemande-le-moi si tu veux toujours l'envoyer.";
+
+    /// <summary>Section de contexte decrivant le brouillon en attente, pour le routeur.</summary>
+    private static string DescribePending(MimeMessage pending) =>
+        $"--- Brouillon EN ATTENTE de validation (destinataire : {pending.To} | objet : {pending.Subject}"
+        + (DescribeAttachments(pending) is { Length: > 0 } pj ? $" | {pj}" : "") + ") ---\n"
+        + (pending.TextBody ?? "").Trim()
+        + "\n--- fin du brouillon ---";
+
     /// <summary>Construit la reponse (MimeMessage) au mail d'origine, avec threading (Re: + In-Reply-To).</summary>
-    private MimeMessage BuildReply(EmailItem original, string replyText, out string? toAddress)
+    private MimeMessage BuildReply(EmailItem original, string replyText, IEnumerable<PendingAttachment> attachments, out string? toAddress)
     {
         toAddress = null;
         var msg = new MimeMessage();
@@ -507,7 +711,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
             msg.References.Add(original.MessageId);
         }
 
-        msg.Body = new TextPart("plain") { Text = replyText };
+        msg.Body = BuildBody(replyText, [], attachments);
         return msg;
     }
 
@@ -560,25 +764,54 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         return sb.Length > 0 ? sb.ToString() : "(aucun mail recent en contexte)";
     }
 
-    private async Task<List<(long updateId, long chatId, long messageId, string text)>> GetUpdatesAsync(CancellationToken ct)
+    private async Task<List<Incoming>> GetUpdatesAsync(CancellationToken ct)
     {
         var url = $"https://api.telegram.org/bot{config.Telegram.BotToken}/getUpdates?timeout=0";
         using var resp = await http.GetAsync(url, ct);
         resp.EnsureSuccessStatusCode();
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-        var list = new List<(long, long, long, string)>();
+        var list = new List<Incoming>();
         foreach (var u in doc.RootElement.GetProperty("result").EnumerateArray())
         {
             var updateId = u.GetProperty("update_id").GetInt64();
             if (!u.TryGetProperty("message", out var msg)) continue;
             var chatId = msg.GetProperty("chat").GetProperty("id").GetInt64();
             var messageId = msg.TryGetProperty("message_id", out var mid) ? mid.GetInt64() : 0;
-            var text = msg.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
-            list.Add((updateId, chatId, messageId, text));
+
+            // Un message avec fichier n'a pas de "text" : sa consigne est dans "caption".
+            var text = msg.TryGetProperty("text", out var t) ? t.GetString() ?? ""
+                : msg.TryGetProperty("caption", out var c) ? c.GetString() ?? "" : "";
+
+            TelegramFile? file = null;
+            if (msg.TryGetProperty("document", out var d))
+            {
+                file = new TelegramFile(
+                    d.GetProperty("file_id").GetString() ?? "",
+                    d.TryGetProperty("file_name", out var fn) ? fn.GetString() ?? "fichier" : "fichier",
+                    d.TryGetProperty("mime_type", out var mt) ? mt.GetString() ?? "application/octet-stream" : "application/octet-stream",
+                    d.TryGetProperty("file_size", out var fs) ? fs.GetInt64() : 0);
+            }
+            else if (msg.TryGetProperty("photo", out var p) && p.ValueKind == JsonValueKind.Array && p.GetArrayLength() > 0)
+            {
+                // Telegram fournit plusieurs tailles : la derniere est la plus grande.
+                var best = p[p.GetArrayLength() - 1];
+                file = new TelegramFile(
+                    best.GetProperty("file_id").GetString() ?? "",
+                    $"photo_{messageId}.jpg", "image/jpeg",
+                    best.TryGetProperty("file_size", out var ps) ? ps.GetInt64() : 0);
+            }
+
+            list.Add(new Incoming(updateId, chatId, messageId, text, file));
         }
         return list;
     }
+
+    /// <summary>Message Telegram entrant : texte (ou legende du fichier) et fichier eventuel.</summary>
+    private sealed record Incoming(long UpdateId, long ChatId, long MessageId, string Text, TelegramFile? File);
+
+    /// <summary>Fichier joint a un message Telegram (document ou photo), avant telechargement.</summary>
+    private sealed record TelegramFile(string FileId, string FileName, string MimeType, long Size);
 
     private async Task ConfirmUpdatesAsync(long offset, CancellationToken ct)
     {

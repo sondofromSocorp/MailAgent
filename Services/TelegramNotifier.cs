@@ -12,21 +12,38 @@ public sealed class TelegramNotifier(AgentConfig config, HttpClient http, string
 {
     public async Task NotifyAsync(EmailItem email, Classification classification, CancellationToken ct = default)
     {
+        // En multi-boites, prefix = "[nom] " pour savoir de quelle boite vient le mail.
+        await SendTextAsync(prefix + FormatNotification(email, classification), ct);
+    }
+
+    /// <summary>
+    /// Envoie en UN message le recapitulatif des notifications reportees pendant les heures
+    /// silencieuses (plutot qu'une rafale de notifs au reveil).
+    /// </summary>
+    public async Task NotifyDigestAsync(IReadOnlyList<string> notifications, CancellationToken ct = default)
+    {
+        if (notifications.Count == 0) return;
+        var text = prefix
+            + $"🌙 Pendant les heures silencieuses, {notifications.Count} mail(s) important(s) :\n\n"
+            + string.Join("\n\n", notifications);
+        await SendTextAsync(text, ct);
+    }
+
+    /// <summary>Texte d'une notification (sans prefixe de boite).</summary>
+    public static string FormatNotification(EmailItem email, Classification classification)
+    {
         // Message en langage naturel redige par le modele ; repli sur un format simple si absent
         // OU si le modele a mis du JSON/balisage a la place du texte (petits modeles locaux) :
         // on n'envoie jamais un blob technique a l'utilisateur.
-        // En multi-boites, prefix = "[nom] " pour savoir de quelle boite vient le mail.
         var notif = classification.Notif.Trim();
         if (notif.StartsWith('{') || notif.StartsWith('[') || notif.StartsWith('<')) notif = "";
-        var text = prefix + (notif.Length > 0
+        return notif.Length > 0
             ? $"📩 {notif}"
             : $"📧 Mail important\n" +
               $"De : {email.From}\n" +
               $"Objet : {email.Subject}\n" +
               (classification.Action.Length > 0 ? $"➡️ A faire : {classification.Action}\n" : "") +
-              $"Raison : {classification.Reason}");
-
-        await SendTextAsync(text, ct);
+              $"Raison : {classification.Reason}";
     }
 
     public async Task SendTextAsync(string text, CancellationToken ct = default)

@@ -35,10 +35,13 @@ GitHub Actions est ephemere, l'etat vit dans la boite). Marche sur tout serveur 
   dossier `ASupprimer` (deplacement reversible). Les expediteurs listes dans
   `Classifier:BlockedSenders` partent direct a la corbeille Gmail (recuperable 30 j).
 - **Heures silencieuses** (22:00–06:30, Europe/Paris) : les notifs sont reportees
-  apres la plage ; le rangement n'est pas affecte.
+  apres la plage ; le rangement n'est pas affecte. Un mail important recu la nuit recoit
+  le keyword `MailAgentDeferred` (ignore jusqu'au matin, donc pas re-classe a chaque
+  passe), puis les notifs reportees partent en **un seul recapitulatif** au reveil.
 - **Bot conversationnel Telegram** : tu peux interroger ta boite, demander un resume,
-  ou faire **rediger une reponse**. Garde-fou : **aucun mail n'est envoye sans ta
-  validation explicite** (« oui »).
+  ou faire **rediger une reponse**, puis la **retoucher** (« plus court », « ajoute que... »).
+  Garde-fou : **aucun mail n'est envoye sans ta validation explicite** (« oui »), et un
+  brouillon non valide expire apres 24 h (`Smtp:PendingTtlHours`).
 - **Agenda auto** (Google Calendar) : detecte les evenements dates, cree l'evenement
   et te previent. *Code present mais inactif tant que les secrets Google ne sont pas
   fournis (voir §2).*
@@ -109,9 +112,13 @@ En parlant au bot tu peux : poser une question / demander un resume (contexte : 
 derniers mails, enrichi a la demande par les outils ci-dessus), demander **tes mails importants** (« quels mails dois-je traiter ? » —
 classe les non-repondus de la boite), **retrouver un mail** (« retrouve le mail de Mme X » —
 recherche expediteur/objet sur tout le compte, archives comprises), **repondre a un mail**
-(brouillon soumis a ta validation explicite), **envoyer un nouveau mail** (« envoie un mail
+(brouillon soumis a ta validation explicite ; « plus court », « plus formel », « ajoute que... »
+le reecrivent avant validation), **envoyer un nouveau mail** (« envoie un mail
 a jean@exemple.fr pour lui dire que... » — meme circuit brouillon + validation ; si tu ne
-donnes qu'un nom, l'agent cherche l'adresse dans les mails recents), te **desabonner** d'une newsletter,
+donnes qu'un nom, l'agent cherche l'adresse dans les mails recents), **joindre un fichier** (envoie
+un document ou une photo au bot, avec ta consigne en legende ou dans le message suivant : il est
+joint au brouillon en cours ou au prochain ; limite Telegram 20 Mo ; les fichiers en attente
+vivent dans le dossier IMAP du brouillon et expirent avec lui), te **desabonner** d'une newsletter,
 **bloquer un expediteur** (« bloque Temu », « ignore ces mails » — ses prochains mails
 partent directement a la corbeille ; « debloque X » et « qui est bloque ? » pour gerer
 la liste, persistee dans un dossier IMAP dedie donc conservee entre les passes), et
@@ -195,6 +202,7 @@ MailAgent/
 ├── Models/                    EmailItem, Classification
 └── Services/
     ├── EmailReader            lecture IMAP (MailKit)
+    ├── HtmlText               corps HTML -> texte lisible pour le modele
     ├── ILlmClient             abstraction LLM (+ ClaudeLlmClient / OllamaLlmClient)
     ├── EmailClassifier        classification via le LLM configure
     ├── EmailSender            envoi SMTP + brouillon en attente
