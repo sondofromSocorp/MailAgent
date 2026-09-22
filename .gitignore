@@ -4,3 +4,4 @@ state.json
 appsettings.local.json
 .env
 *.user
+telegram-memory.json

@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using MailAgent.Configuration;
 using MailAgent.Models;
 using MimeKit;
@@ -17,6 +18,10 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
 {
     private readonly UnsubscribeService _unsubscribe = new(account, sender, http);
     private readonly AssistantToolLoop _tools = new(reader, llm);
+    private readonly ConversationMemory _memory = new(
+        Path.Combine(AppContext.BaseDirectory, config.Telegram.MemoryFile),
+        config.Telegram.MemoryExchanges,
+        TimeSpan.FromMinutes(config.Telegram.MemoryTtlMinutes));
 
     private const string RouterPrompt =
         """
@@ -47,6 +52,11 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                      reply = le texte COMPLET du brouillon REECRIT en appliquant la demande : repars
                      du brouillon fourni, PAS d'un mail de la liste. subject = le nouvel objet si
                      l'utilisateur le change, sinon "". target=0, answer="".
+        - "recipient": un BROUILLON EST EN ATTENTE dont le destinataire est "A PRECISER" et
+                     l'utilisateur donne A QUI l'envoyer (une adresse email, ou juste un nom /
+                     prenom, ex. "paul@exemple.fr", "c'est pour Paul Durand", "envoie-le a Marie").
+                     query = l'adresse EXACTE si elle est donnee, sinon le nom cite.
+                     target=0, reply="", answer="".
         - "send"   : l'utilisateur VALIDE l'envoi en attente (ex. "oui", "envoie", "valide",
                      "ok envoie", "c'est bon"). target=0, reply="", answer="".
         - "cancel" : l'utilisateur ANNULE (ex. "annule", "non laisse tomber"). target=0, reply="", answer="".
@@ -85,9 +95,15 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
 
         S'il y a un brouillon en attente et que le message porte sur CE brouillon (modification,
         reformulation, correction), c'est "revise" : jamais "reply" ni "compose" dans ce cas.
+        Si le brouillon en attente n'a pas de destinataire ("A PRECISER") et que le message
+        indique a qui l'envoyer, c'est "recipient" : jamais "compose" ni "chat" dans ce cas.
         Si des PIECES JOINTES sont fournies (liste en contexte), elles seront ajoutees
         automatiquement au mail : mentionne-les naturellement dans le texte redige
         (ex. "Vous trouverez ci-joint ..."), sans inventer leur contenu.
+        Les "Derniers echanges Telegram" (s'ils sont fournis) servent a comprendre un message
+        court qui repond a une question precedente de l'assistant (ex. "le deuxieme", "Durand",
+        "celui de la CAF") : interprete-le dans la continuite de la demande initiale de
+        l'utilisateur (meme intention, meme mail, meme destinataire).
         En cas de DOUTE, choisis "chat" : ne declenche JAMAIS un envoi par erreur.
         Reponds UNIQUEMENT le JSON, sans texte ni balise autour.
         """;
@@ -122,6 +138,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
             }
         }
 
+        _memory.Save();
         await ConfirmUpdatesAsync(maxUpdateId + 1, ct);
     }
 
@@ -129,6 +146,11 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
     {
         var text = u.Text;
         var messageId = u.MessageId;
+
+        // Historique AVANT d'y ajouter le message courant (il est fourni a part au routeur).
+        var history = _memory.Describe();
+        if (history.Length > 0) context += "\n\n" + history;
+        _memory.AddUser(u.File is null ? text : $"[fichier joint : {u.File.FileName}] {text}");
 
         // Le brouillon en attente fait partie du contexte du routeur : « oui » veut dire
         // « envoie », « plus court » veut dire « modifie ce brouillon » (et pas une nouvelle
@@ -168,6 +190,15 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
             }
         }
 
+        // Brouillon sans destinataire (compose dont l'adresse etait inconnue) et le message
+        // contient une adresse email : on complete directement, sans passer par le LLM
+        // (une adresse seule est ambigue pour le routeur, qui la classerait en "chat").
+        if (pending is not null && pending.To.Count == 0 && ExtractEmailAddress(text) is { } address)
+        {
+            await HandleRecipientAsync(pending, address, recent, attachments, ct);
+            return;
+        }
+
         var routerContext = context;
         if (pending is not null) routerContext += "\n\n" + DescribePending(pending);
         if (attachments.Count > 0)
@@ -175,11 +206,17 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
                 + string.Join(", ", attachments.Select(a => $"{a.FileName} ({a.SizeLabel})"));
 
         var route = await RouteAsync(text, routerContext, ct);
-        var consumes = route.Intent is "reply" or "compose" or "revise";
+        var consumes = route.Intent is "reply" or "compose" or "revise" or "recipient";
         switch (route.Intent)
         {
             case "send":
                 await HandleSendAsync(found, expired, ct);
+                break;
+            case "recipient":
+                if (pending is null || pending.To.Count > 0)
+                    await SendTextAsync("Il n'y a pas de brouillon en attente de destinataire. Dis-moi a qui ecrire et quoi.", ct);
+                else
+                    await HandleRecipientAsync(pending, route.Query, recent, attachments, ct);
                 break;
             case "revise":
                 await HandleReviseAsync(route, found, expired, attachments, ct);
@@ -257,7 +294,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         await SendTextAsync(
             $"📎 Piece(s) jointe(s) ajoutee(s) au brouillon pour {msg.To}\nObjet : {msg.Subject}\n{DescribeAttachments(msg)}\n\n"
             + "Reponds OUI pour envoyer, ou dis-moi quoi changer.", ct);
-        Console.WriteLine($"    -> {attachments.Count} piece(s) jointe(s) ajoutee(s) au brouillon (a {msg.To}).");
+        Console.WriteLine($"    -> {attachments.Count} piece(s) jointe(s) ajoutee(s) au brouillon (a {Recipient(msg)}).");
     }
 
     /// <summary>
@@ -288,6 +325,10 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         foreach (var a in added) builder.Attachments.Add(a.FileName, a.Data, EmailSender.ParseContentType(a.MimeType));
         return builder.ToMessageBody();
     }
+
+    /// <summary>Destinataire(s) d'un brouillon, ou une mention explicite s'il n'en a pas encore.</summary>
+    private static string Recipient(MimeMessage msg) =>
+        msg.To.Count > 0 ? msg.To.ToString() : "A PRECISER (aucun destinataire pour l'instant)";
 
     /// <summary>Ligne « 📎 ... » listant les pieces jointes d'un brouillon, ou "" s'il n'y en a pas.</summary>
     private static string DescribeAttachments(MimeMessage msg)
@@ -432,23 +473,29 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
             return;
         }
 
-        var toAddress = ResolveAddress(route.Query, recent);
-        if (toAddress is null)
-        {
-            await SendTextAsync(
-                route.Query.Length > 0
-                    ? $"Je n'ai pas d'adresse email pour « {route.Query} » (introuvable dans les mails recents). Donne-moi son adresse ?"
-                    : "A quelle adresse email dois-je envoyer ce mail ?", ct);
-            return;
-        }
+        var toAddress = await ResolveAddressAsync(route.Query, recent, ct);
 
         var msg = new MimeMessage();
         msg.From.Add(MailboxAddress.Parse(account.User));
-        msg.To.Add(toAddress);
+        if (toAddress is not null) msg.To.Add(toAddress);
         msg.Subject = route.Subject.Length > 0 ? route.Subject : "(sans objet)";
         msg.Body = BuildBody(route.Reply, [], attachments);
 
+        // Destinataire inconnu : le brouillon (texte, objet, pieces jointes) est quand meme
+        // stocke, SANS destinataire. Sinon l'adresse donnee au message suivant arrive sans
+        // contexte (le bot est sans etat) et n'est jamais prise en compte.
         await sender.SavePendingAsync(msg, ct);
+        if (toAddress is null)
+        {
+            await SendTextAsync(
+                $"📝 Brouillon pret (objet : {msg.Subject}){(DescribeAttachments(msg) is { Length: > 0 } pj ? "\n" + pj : "")}\n\n{route.Reply}\n\n"
+                + (route.Query.Length > 0
+                    ? $"Je n'ai pas d'adresse email pour « {route.Query} » (introuvable dans la boite). Donne-moi son adresse et je te le presente pour validation."
+                    : "A quelle adresse email dois-je l'envoyer ? Donne-la-moi et je te le presente pour validation."), ct);
+            Console.WriteLine($"    -> nouveau mail en attente de destinataire (« {route.Query} », {attachments.Count} piece(s) jointe(s)).");
+            return;
+        }
+
         await SendTextAsync(
             $"📨 Nouveau mail pour {toAddress.Address}\nObjet : {msg.Subject}\n{DescribeAttachments(msg)}\n\n{route.Reply}\n\n" +
             "Reponds OUI pour envoyer, ou dis-moi quoi changer.", ct);
@@ -456,9 +503,69 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
     }
 
     /// <summary>
-    /// Resout le destinataire d'un nouveau mail : adresse explicite si le routeur en a extrait
-    /// une, sinon recherche du nom parmi les expediteurs des mails recents. Null si introuvable.
+    /// Le brouillon en attente n'a pas de destinataire et l'utilisateur en donne un (adresse
+    /// ou nom d'un expediteur recent) : on complete le brouillon et on le presente pour validation.
+    /// Retourne false si le destinataire reste introuvable (on redemande).
     /// </summary>
+    private async Task<bool> HandleRecipientAsync(MimeMessage pending, string query, IReadOnlyList<EmailItem> recent, IReadOnlyList<PendingAttachment> attachments, CancellationToken ct)
+    {
+        var toAddress = await ResolveAddressAsync(query, recent, ct);
+        if (toAddress is null)
+        {
+            await SendTextAsync(
+                $"Je n'ai pas trouve d'adresse email pour « {query} » (ni dans les mails recents, ni dans la boite). Donne-moi l'adresse complete (ex. nom@domaine.fr) "
+                + $"pour le brouillon « {pending.Subject} », ou dis « annule ».", ct);
+            return false;
+        }
+
+        // Pieces jointes deja dans le brouillon conservees, celles recues entre-temps ajoutees.
+        var msg = CloneDraft(pending, pending.TextBody ?? "", pending.Subject, attachments);
+        msg.To.Add(toAddress);
+        await sender.SavePendingAsync(msg, ct);
+        await SendTextAsync(
+            $"📨 Nouveau mail pour {toAddress.Address}\nObjet : {msg.Subject}\n{DescribeAttachments(msg)}\n\n{msg.TextBody}\n\n" +
+            "Reponds OUI pour envoyer, ou dis-moi quoi changer.", ct);
+        Console.WriteLine($"    -> destinataire complete : {toAddress.Address}.");
+        return true;
+    }
+
+    /// <summary>Premiere adresse email trouvee dans un texte libre, ou null.</summary>
+    private static string? ExtractEmailAddress(string text)
+    {
+        var m = Regex.Match(text, @"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}");
+        return m.Success ? m.Value : null;
+    }
+
+    /// <summary>
+    /// Resout le destinataire d'un nouveau mail : adresse explicite, sinon nom parmi les
+    /// expediteurs recents, sinon recherche du nom dans TOUTE la boite (carnet d'adresses
+    /// implicite : toute personne qui a deja ecrit). Null si introuvable.
+    /// </summary>
+    private async Task<MailboxAddress?> ResolveAddressAsync(string query, IReadOnlyList<EmailItem> recent, CancellationToken ct)
+    {
+        var found = ResolveAddress(query, recent);
+        if (found is not null) return found;
+
+        query = query.Trim().TrimEnd('.', ',', ';');
+        // Un nom trop court ("Al") ou une adresse mal formee ne meritent pas une recherche IMAP.
+        if (query.Length < 3 || query.Contains('@')) return null;
+
+        try
+        {
+            var matches = await reader.SearchAllMailAsync(query, max: 20, ct);
+            var resolved = ResolveAddress(query, matches);
+            if (resolved is not null) Console.WriteLine($"    -> destinataire « {query} » trouve dans la boite : {resolved.Address}.");
+            return resolved;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"    [Destinataire] recherche dans la boite impossible ({ex.Message}).");
+            return null;
+        }
+    }
+
+    /// <summary>Adresse explicite si la requete en contient une, sinon nom parmi les expediteurs donnes.</summary>
     private static MailboxAddress? ResolveAddress(string query, IReadOnlyList<EmailItem> recent)
     {
         query = query.Trim().TrimEnd('.', ',', ';');
@@ -617,6 +724,11 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
             await SendTextAsync("Il n'y a aucun mail en attente a envoyer.", ct);
             return;
         }
+        if (pending.To.Count == 0)
+        {
+            await SendTextAsync($"Le brouillon « {pending.Subject} » n'a pas encore de destinataire. A quelle adresse email dois-je l'envoyer ?", ct);
+            return;
+        }
 
         await sender.SendAsync(pending, ct);
         await sender.DeletePendingAsync(ct);
@@ -654,7 +766,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         await SendTextAsync(
             $"✏️ Brouillon mis a jour pour {msg.To}\nObjet : {msg.Subject}\n{DescribeAttachments(msg)}\n\n{route.Reply}\n\n" +
             "Reponds OUI pour envoyer, ou dis-moi quoi changer.", ct);
-        Console.WriteLine($"    -> brouillon revise (a {msg.To}).");
+        Console.WriteLine($"    -> brouillon revise (a {Recipient(msg)}).");
     }
 
     /// <summary>
@@ -682,7 +794,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
 
     /// <summary>Section de contexte decrivant le brouillon en attente, pour le routeur.</summary>
     private static string DescribePending(MimeMessage pending) =>
-        $"--- Brouillon EN ATTENTE de validation (destinataire : {pending.To} | objet : {pending.Subject}"
+        $"--- Brouillon EN ATTENTE de validation (destinataire : {Recipient(pending)} | objet : {pending.Subject}"
         + (DescribeAttachments(pending) is { Length: > 0 } pj ? $" | {pj}" : "") + ") ---\n"
         + (pending.TextBody ?? "").Trim()
         + "\n--- fin du brouillon ---";
@@ -824,6 +936,7 @@ public sealed class TelegramConversation(AgentConfig config, AccountConfig accou
         // Telegram refuse (HTTP 400) un message vide ou de plus de 4096 caracteres : on garantit
         // un texte non vide et on decoupe les longues reponses (ex. un resume) en plusieurs envois.
         if (string.IsNullOrWhiteSpace(text)) text = "(vide)";
+        _memory.AddBot(text);
 
         var url = $"https://api.telegram.org/bot{config.Telegram.BotToken}/sendMessage";
         foreach (var chunk in SplitForTelegram(text))

@@ -115,7 +115,8 @@ recherche expediteur/objet sur tout le compte, archives comprises), **repondre a
 (brouillon soumis a ta validation explicite ; « plus court », « plus formel », « ajoute que... »
 le reecrivent avant validation), **envoyer un nouveau mail** (« envoie un mail
 a jean@exemple.fr pour lui dire que... » — meme circuit brouillon + validation ; si tu ne
-donnes qu'un nom, l'agent cherche l'adresse dans les mails recents), **joindre un fichier** (envoie
+donnes qu'un nom, l'agent cherche l'adresse parmi les mails recents puis dans toute la boite,
+et s'il ne la trouve pas il garde le brouillon et te la demande), **joindre un fichier** (envoie
 un document ou une photo au bot, avec ta consigne en legende ou dans le message suivant : il est
 joint au brouillon en cours ou au prochain ; limite Telegram 20 Mo ; les fichiers en attente
 vivent dans le dossier IMAP du brouillon et expirent avec lui), te **desabonner** d'une newsletter,
@@ -123,6 +124,12 @@ vivent dans le dossier IMAP du brouillon et expirent avec lui), te **desabonner*
 partent directement a la corbeille ; « debloque X » et « qui est bloque ? » pour gerer
 la liste, persistee dans un dossier IMAP dedie donc conservee entre les passes), et
 **purger la conversation** (« efface nos messages », limite Telegram : 48h).
+
+**Memoire courte** : les 6 derniers echanges (ton message, la reponse du bot, 2 h max) sont
+fournis au routeur, pour qu'un message court qui repond a une question du bot soit compris
+dans la continuite (« lequel ? » / « le deuxieme », « quel Paul ? » / « Durand »). C'est la
+seule donnee locale de l'agent : un petit fichier JSON a cote du binaire
+(`Telegram:MemoryFile`, `MemoryExchanges`, `MemoryTtlMinutes`), non bloquant s'il est illisible.
 
 ### Desabonnement a la demande (Telegram)
 

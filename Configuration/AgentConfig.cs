@@ -213,6 +213,18 @@ public sealed class TelegramConfig
 
     /// <summary>Identifiant du chat destinataire (ton compte). Injecte via le secret TELEGRAM_CHAT_ID.</summary>
     public string ChatId { get; set; } = "";
+
+    /// <summary>
+    /// Fichier JSON de la memoire courte de conversation (derniers echanges, fournis au routeur
+    /// pour comprendre « le deuxieme », « Durand »...). Relatif au dossier de l'application.
+    /// </summary>
+    public string MemoryFile { get; init; } = "telegram-memory.json";
+
+    /// <summary>Nombre d'echanges (message + reponse) conserves en memoire courte.</summary>
+    public int MemoryExchanges { get; init; } = 6;
+
+    /// <summary>Au-dela de ce delai (minutes), un echange n'est plus fourni au routeur.</summary>
+    public int MemoryTtlMinutes { get; init; } = 120;
 }
 
 public sealed class GoogleCalendarConfig
