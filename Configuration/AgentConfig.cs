@@ -201,9 +201,12 @@ public sealed class OllamaConfig
 
 public sealed class ClaudeConfig
 {
-    public string Model { get; init; } = "claude-haiku-4-5-20251001";
+    public string Model { get; init; } = "claude-haiku-5-5";
     public string ApiBaseUrl { get; init; } = "https://api.anthropic.com/v1/messages";
     public string AnthropicVersion { get; init; } = "2023-06-01";
+    /// <summary>Haiku 5.5 reflechit par defaut : on coupe pour le tri (budget 1000 tokens).
+    /// A passer a false pour Opus 5.5 / Sonnet 5.5, qui refusent thinking=disabled (400).</summary>
+    public bool DisableThinking { get; init; } = true;
 }
 
 public sealed class TelegramConfig

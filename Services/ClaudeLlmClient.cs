@@ -13,16 +13,18 @@ public sealed class ClaudeLlmClient(AgentConfig config, HttpClient http) : ILlmC
 {
     public async Task<string> CompleteAsync(string system, string userContent, int maxTokens, CancellationToken ct = default)
     {
-        var payload = new
+        var payload = new Dictionary<string, object>
         {
-            model = config.Claude.Model,
-            max_tokens = maxTokens,
-            system,
-            messages = new[]
+            ["model"] = config.Claude.Model,
+            ["max_tokens"] = maxTokens,
+            ["system"] = system,
+            ["messages"] = new[]
             {
                 new { role = "user", content = userContent }
             }
         };
+        if (config.Claude.DisableThinking)
+            payload["thinking"] = new { type = "disabled" };
 
         using var resp = await SendWithRetryAsync(payload, ct);
         if (!resp.IsSuccessStatusCode)
@@ -36,10 +38,11 @@ public sealed class ClaudeLlmClient(AgentConfig config, HttpClient http) : ILlmC
         }
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-        return doc.RootElement
-            .GetProperty("content")[0]
-            .GetProperty("text")
-            .GetString() ?? "";
+        // Le premier bloc peut etre un bloc "thinking" (modeles 5.x) : on prend le premier "text".
+        foreach (var block in doc.RootElement.GetProperty("content").EnumerateArray())
+            if (block.GetProperty("type").GetString() == "text")
+                return block.GetProperty("text").GetString() ?? "";
+        return "";
     }
 
     /// <summary>

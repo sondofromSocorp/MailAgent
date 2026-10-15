@@ -1,7 +1,7 @@
 # MailAgent
 
 Agent .NET 8 qui lit une boite Gmail (IMAP), **trie** les mails via un **LLM**
-(Claude Haiku par l'API Anthropic, ou un modele local via **Ollama**), **notifie sur
+(Claude Haiku 5.5 par l'API Anthropic, ou un modele local via **Ollama**), **notifie sur
 Telegram** les mails importants, **dialogue** avec toi (lecture, resume, reponse avec
 validation) et **ajoute a Google Agenda** les evenements dates qu'il detecte.
 
